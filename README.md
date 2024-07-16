@@ -2,6 +2,7 @@ String Geometry: a repository for "string and thumbtack" constructions (in dimen
 
 Requirements: 
   - GNU Scientific Library (GSL: https://www.gnu.org/software/gsl/)
+    
   from whw_clib:
   - basics.c/h
   - system.c/h (only for saving configurations)
