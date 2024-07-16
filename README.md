@@ -1,5 +1,11 @@
 String Geometry: a repository for "string and thumbtack" constructions (in dimension > 1)
 
+Requirements: 
+  - GNU Scientific Library (GSL: https://www.gnu.org/software/gsl/)
+  from whw_clib:
+  - basics.c/h
+  - system.c/h (only for saving configurations)
+
 TO DO:
 - Change sc_minimizer_mm (multimin) and sc_Lagrange_solver to track indirectly frozen vertices (i.e. vertices whose neighbors are all frozen)
   - This might improve numerical stability of gsl_multiroot_fdf_solvers.
