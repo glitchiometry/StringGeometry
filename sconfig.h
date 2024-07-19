@@ -7,7 +7,6 @@
 #define SCONFIG_H
 #include "basics.h"
 #include "system.h"
-#include "partition.h"
 #include "gsl/gsl_vector.h"
 #include "gsl/gsl_multimin.h"
 #include "gsl/gsl_roots.h"
@@ -20,6 +19,8 @@
 #define FDFMINIMIZER 1
 #define count_tally_size 256
 
+//#define gsl_minimizer_type_mm gsl_multimin_fdfminimizer_conjugate_pr
+#define gsl_minimizer_type_mm gsl_multimin_fdfminimizer_vector_bfgs2
 
 typedef struct
 {
@@ -89,7 +90,6 @@ typedef struct
   string_config *sc;
   array_int *c_map;
   double core_radsq;
-  partition *prt;
   contr_nbrlist *top;
   array_int *cmobile;
   array_int *cmobile_map;
@@ -103,6 +103,9 @@ void length_func_fdf_incr(const double *xi, const double *xj, int wt, gsl_matrix
 int length_func_fdf(const gsl_vector *x, void *pars, gsl_vector *df, gsl_matrix *H);
 int Hess_length_func(const gsl_vector *x, void *pars, gsl_matrix *H);
 int grad_length_func(const gsl_vector *x, void *pars, gsl_vector *df);
+
+double mobile_length_func_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq);
+double mobile_length_func(const gsl_vector *c_data, void *pars);
 
 double total_length_func_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq);
 double total_length_func(const gsl_vector *c_data, void *pars);
@@ -138,13 +141,9 @@ typedef struct
   int n_vars;
   //  total_length_func_pars tlf_pars;
   void *pars;
-  
   contr_nbrlist top;
   array_int cmobile;
   array_int cmobile_map;
-  array_int cfxd;
-  array_int cfxd_map;
-  array_voidstar cfxd_coords;
 } sc_minimizer_nm;
 
 void sc_minimizer_nm_init(sc_minimizer_nm *scm, string_config *sc, double stepsize);
@@ -195,9 +194,6 @@ typedef struct
   contr_nbrlist top;
   array_int cmobile;
   array_int cmobile_map;
-  array_int cfxd;
-  array_int cfxd_map;
-  array_voidstar cfxd_coords;
 } sc_minimizer_mm;
 
 // Heuristic function used to find initial guesses for the Lagrange solver
@@ -211,22 +207,19 @@ typedef struct
   array_int *cmobile;
   array_int *cmobile_map;
   array_int *c_map;
-  array_int *cfxd;
-  array_int *cfxd_map;
-  array_voidstar *cfxd_coords;
   double core_radsq;
   double *ext_f;
   int ext_f_site;
   double L0;
-  //  double L0_fxd;
   double L0_cfxd;
+  double offset;
 } heuristic_pars;
 
 double const_L_heuristic(const gsl_vector *c_data, void *pars);
 void const_L_heuristic_df(const gsl_vector *c_data, void *pars, gsl_vector *df);
 void const_L_heuristic_fdf(const gsl_vector *c_data, void *pars, double *f, gsl_vector *df);
 
-void sc_minimizer_mm_init(sc_minimizer_mm *scm, string_config *sc, double stepsize, double tol);
+void sc_minimizer_mm_init(sc_minimizer_mm *scm, string_config *sc);
 void free_sc_minimizer_mm(sc_minimizer_mm *scm);
 int sc_minimizer_mm_iterate(sc_minimizer_mm *scm);
 int sc_minimizer_mm_relax_diag(sc_minimizer_mm *scm, int n_steps, FILE *ofile);
@@ -273,9 +266,6 @@ typedef struct
   array_int cmobile;
   array_int cmobile_map;
   array_int c_map;
-  array_int cfxd;
-  array_int cfxd_map;
-  array_voidstar cfxd_pos;
   total_length_func_pars tlf_pars;
   int n_vars;
   gsl_multiroot_fdfsolver *solver;
@@ -289,40 +279,6 @@ int sc_minimizer_fin_iterate(sc_minimizer_fin *scm);
 ///void sc_minimizer_fin_check_merging(sc_minimizer_fin *scm, double rad);
 int sc_minimizer_fin_relax(sc_minimizer_fin *scm, double prec);
 void sc_minimizer_fin_relax_diag(sc_minimizer_fin *scm, int N_steps, FILE *ofile);
-
-typedef struct
-{
-  string_config *sc;
-  char solver_type;
-  int n_vars;
-  array_int c_map;
-  gsl_multimin_fdfminimizer *solver;
-  gsl_multimin_function_fdf solver_data;
-  gsl_multimin_fminimizer *aux_solver;
-  gsl_multimin_function aux_solver_data;
-  double tol;
-  gsl_vector *c_data;
-  gsl_vector *smplx;
-  //void *pars;
-  total_length_func_pars tlf_pars;
-  contr_nbrlist top;
-  array_int cmobile;
-  array_int cmobile_map;
-  //double core_radsq; // RESUME: make sure this is initialized!
-} sc_min_len_solver; // NOTE: this may have been rendered obsolete by sc_minimizer_mm and sc_minimizer_nm 
-
-void sc_min_len_solver_cgmode(sc_min_len_solver *scs);
-int sc_min_len_solver_n_vars(sc_min_len_solver *scs);
-int sc_min_len_solver_relax(sc_min_len_solver *scs, double prec);
-void sc_min_len_solver_relax_diag_simplex(sc_min_len_solver *scs, int N_steps, FILE *output);
-void sc_min_len_solver_relax_diag_fdf(sc_min_len_solver *scs, int N_steps, FILE *output);
-void sc_min_len_solver_init(sc_min_len_solver *scs, string_config *sc, double stepsize, double tol);
-void free_sc_min_len_solver(sc_min_len_solver *scs);
-void sc_min_len_solver_write_coords(sc_min_len_solver *scs);
-void sc_min_len_solver_read_coords(sc_min_len_solver *scs, gsl_vector *c_data);
-const double *sc_min_len_solver_vertex_coords(sc_min_len_solver *scs, int i, const gsl_vector *c_data);
-gsl_vector *sc_min_len_solver_x(sc_min_len_solver *scs);
-
 
 double const_L_target_func(const gsl_vector *c_data, void *pars);
 //double const_L_target_func2(const gsl_vector *c_data, void *pars);
@@ -390,9 +346,6 @@ typedef struct
   array_int cmobile;
   array_int cmobile_map;
   array_int c_map;
-  array_int cfxd;
-  array_int cfxd_map;
-  array_voidstar cfxd_coords;
 } sc_Lagrange_solver;
 
 // NOTE: eventually, this should probably be replaced/augmented with custom 
@@ -446,8 +399,6 @@ double sc_cl_composite_solver_iterate(sc_cl_composite_solver *sccs);
 // Utility functions
 double rnd();
 double min(double a, double b);
-int fdf_iter_func(sc_min_len_solver *scs);
-int f_iter_func(sc_min_len_solver *scs);
 
 int get_sc_minimizer_mm_counter();
 int get_sc_minimizer_rf_counter();
@@ -460,7 +411,6 @@ int get_comp_total_length_func_counter();
 void remove_embedding(array_int *emb, array_int *emb_inv, int emb_index);
 
 // Contractions of string configs
-void group_leaves_elbows(string_config *sc, partition *prt);
 void contract_leaves(contr_nbrlist *aux, array_int *bdry, array_int *mobile, array_int *is_mobile);
 void contract_elbows(contr_nbrlist *aux, array_int *elbows, array_int *mobile, array_int *is_mobile);
 
@@ -472,5 +422,156 @@ double euclid_distsq(const double *x0, const double *x1, int len);
 double euclid_normsq(const double *x, int len);
 
 double sc_minimizer_shortest_dist(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector *c_data);
+
+typedef struct
+{
+  int dim;
+  array_voidstar coords;
+  array_char is_fxd;
+  array_int mobile;
+  array_int fxd;
+  array_int fm_addr;
+} tack_set;
+
+void tack_set_init(tack_set *ts, int dim);
+void add_fxd_pt_tack_set(tack_set *ts, double *x);
+void add_mbl_pt_tack_set(tack_set *ts, double *x);
+void free_tack_set(tack_set *ts, void (*free_coord_elem)(void *));
+double tack_set_var_x(tack_set *ts);
+
+typedef struct
+{
+  tack_set *ts;
+  array_voidstar tops; // edge-weighted graphs
+  array_voidstar embs; // embeddings
+} linked_sc;
+
+void linked_sc_init(linked_sc *lsc, tack_set *ts);
+char linked_sc_connected(linked_sc *lsc);
+void free_linked_sc(linked_sc *lsc);
+void free_linked_sc_shallow(linked_sc *lsc);
+void add2linked_sc(linked_sc *lsc, edge_wtd_graph *top, array_int *emb);
+
+// RESUME: implement new (undefined) functions in sconfig.c, consider "refactoring"
+//  to incorporate 'coord_pars' in other structures below.
+typedef struct
+{
+  tack_set *ts;
+  array_int map;
+  aarray_int fibers;
+  array_int cmobile;
+  array_int cmobile_map;
+  array_int c_map;
+} coord_pars;
+
+void coord_pars_from_tack_set(coord_pars *cpars, tack_set *ts);
+void free_coord_pars(coord_pars *cpars);
+void coord_pars_merge(coord_pars *cpars, int ci, int cj);
+double contr_pointset_dist(const gsl_vector *x0, coord_pars *cpars0, const gsl_vector *x1, coord_pars *cpars1);
+void transcribe_coord_pars(coord_pars *src, coord_pars *dest);
+char coord_pars_corresp(coord_pars *a, coord_pars *b);
+
+double lsc_string_length(void *ctop_, void *cemb_, coord_pars *cpars, const gsl_vector *x);
+
+void lsc_solver_transcribe_tops(array_voidstar *ctops, array_voidstar *tops);
+void lsc_solver_transcribe_embs(array_voidstar *cembs, aarray_int *cembs_map, array_voidstar *embs, int range_size);
+
+typedef struct
+{
+  linked_sc *lsc;
+  // Coordinate parameters (including a map from 'tack set' to clusters and its 'inverse')
+  coord_pars *cpars;
+  // Contracted topologies (as edge-weighted graphs) 
+  array_voidstar *ctops;
+  // Contracted embeddings (as array_ints)
+  array_voidstar *cembs;
+  // Inverse of embeddings (over contracted point-set, or the image of ts_map)
+  aarray_int *cembs_map;
+  double *Ls;
+  // "Force" constant
+  double k;
+  // Vertex or string config
+  int i;
+  // If non-null, the force exerted at vertex 'i' (or its associated cluster)
+  double *ext_f;
+} lsc_heuristic_pars;
+
+typedef struct
+{
+  linked_sc *lsc;
+  coord_pars *cpars;
+  // Contracted topologies (as edge-weighted graphs) 
+  array_voidstar *ctops;
+  // Contracted embeddings (as array_ints)
+  array_voidstar *cembs;
+  // Inverse of embeddings (over contracted point-set, or the image of ts_map)
+  aarray_int *cembs_map;
+  double *Ls;
+  int i;
+  double *ext_f;
+} lsc_Lagrange_pars;
+ 
+typedef struct
+{
+  linked_sc *lsc;
+  int i;
+  double *ext_f;
+  gsl_vector *c_data;
+  lsc_heuristic_pars hpars; // RESUME: define these types!
+  gsl_multimin_fdfminimizer *hsolver;
+  gsl_multimin_function_fdf hsolver_data;
+  coord_pars cpars;
+  // Contracted topologies (as edge-weighted graphs) 
+  array_voidstar ctops;
+  // Contracted embeddings (as array_ints)
+  array_voidstar cembs;
+  // Inverse of embeddings (over contracted point-set, or the image of ts_map)
+  aarray_int cembs_map;
+  double *Ls;
+} lsc_h_minimizer;
+
+typedef struct
+{
+  // Associated linked string config
+  linked_sc *lsc;
+  // An index (either a distinguished string config to be minimized, or a (mobile) vertex at which to apply the external force)
+  int i;
+  double *ext_f;
+  lsc_Lagrange_pars lpars;
+  gsl_multiroot_fdfsolver *Lsolver;
+  gsl_multiroot_function_fdf Lsolver_data;
+  // Consider replacing this with a generic 'coordinate data' structure
+  gsl_vector *c_data;
+  coord_pars cpars;
+  // Contracted topologies (as edge-weighted graphs) 
+  array_voidstar ctops;
+  // Contracted embeddings (as array_ints)
+  array_voidstar cembs;
+  // Inverse of embeddings (over contracted point-set, or the image of ts_map)
+  aarray_int cembs_map;
+  double *Ls;
+} lsc_L_solver;
+
+void lsc_h_minimizer_init(lsc_h_minimizer *lscm, linked_sc *lsc, int i, double *ext_f, double *Ls, double k);
+void free_lsc_h_minimizer(lsc_h_minimizer *lscm);
+int lsc_h_minimizer_iterate(lsc_h_minimizer *lscm);
+void lsc_h_minimizer_check_merging(lsc_h_minimizer *lscm, double merge_rad);
+void lsc_h_minimizer_expand_clusters(lsc_h_minimizer *lscm);
+int lsc_h_minimizer_relax(lsc_h_minimizer *lscm, double tol);
+int lsc_h_minimizer_solve(lsc_h_minimizer *lscm, double tol);
+
+double lsc_h_f(const gsl_vector *x, void *pars);
+void lsc_h_df(const gsl_vector *x, void *pars, gsl_vector *df);
+void lsc_h_fdf(const gsl_vector *x, void *pars, double *f, gsl_vector *df);
+
+void lsc_L_solver_init(lsc_L_solver *lscs, lsc_h_minimizer *lsm);
+void free_lsc_L_solver(lsc_L_solver *lscs);
+void lsc_L_solver_iterate(lsc_L_solver *lscs);
+void lsc_L_solver_relax(lsc_L_solver *lscs, double tol);
+void lsc_L_solver_solve(lsc_L_solver *lscs, double tol);
+
+int lsc_L_f(const gsl_vector *x, void *pars, gsl_vector *f);
+int lsc_L_df(const gsl_vector *x, void *pars, gsl_matrix *J);
+int lsc_L_fdf(const gsl_vector *x, void *pars, gsl_vector *f, gsl_matrix *J);
 
 #endif
