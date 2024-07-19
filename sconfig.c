@@ -4016,9 +4016,9 @@ void coord_pars_merge(coord_pars *cpars, int ci, int cj)
     }
   remove_array_int(&((*cpars).cmobile_map), ci);
   if (ci < (*cpars).cmobile_map.len)
-    {
+    {  
       int mci_ = (*cpars).cmobile_map.e[ci];
-      if (mci_ > 0) (*cpars).cmobile.e[mci_] = ci;
+      if (mci_ > -1) (*cpars).cmobile.e[mci_] = ci;
     }
 }
 
@@ -4149,7 +4149,6 @@ void free_lsc_h_minimizer(lsc_h_minimizer *lscm)
   free_array_voidstar(&((*lscm).ctops), free_edge_wtd_graph);
   free_array_voidstar(&((*lscm).cembs), free_array_int);
   free_aarray_int(&((*lscm).cembs_map));
-  // RESUME: free additional structures, consider changing basics.h, basics.c to maintain consistency with void pointer convention.
   free_coord_pars(&((*lscm).cpars));
 }
 
@@ -4191,7 +4190,6 @@ void lsc_h_minimizer_check_merging(lsc_h_minimizer *lscm, double merge_rad)
 		  double distsq = euclid_distsq(xci, xcii, (*lscm).lsc->ts->dim);
 		  if (distsq < mrsq)
 		    {
-		      //printf("Found merging clusters: %d %d\n", cii, ci);
 		      cii_ = cii;
 		      break;
 		    }
@@ -4201,7 +4199,6 @@ void lsc_h_minimizer_check_merging(lsc_h_minimizer *lscm, double merge_rad)
 	}
       if (cii_ > -1)
 	{
-	  //	  printf("Attempting to merge %d->%d\n", ci, cii_);
 	  // Merge the associated clusters in ctops, and adjust the associated embeddings
 	  for (int tii = 0; tii < (*lscm).ctops.len; tii++)
 	    {
@@ -4225,7 +4222,10 @@ void lsc_h_minimizer_check_merging(lsc_h_minimizer *lscm, double merge_rad)
 		  (*lscm).cembs_map.e[cii_].e[tii] = tiici;
 		  (*emb).e[tiici] = cii_;
 		}
-	      else if (tiicii_ > -1) (*lscm).cembs_map.e[ci].e[tii] = tiicii_;
+	      else if (tiicii_ > -1)
+		{
+		  (*lscm).cembs_map.e[ci].e[tii] = tiicii_;
+		}
 	    }
 	  coord_pars_merge(&((*lscm).cpars), ci, cii_);
 	  // Update cembs_map and possibly cembs
