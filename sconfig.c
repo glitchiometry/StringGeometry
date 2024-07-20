@@ -1381,15 +1381,10 @@ void sc_minimizer_mm_init_heuristic(sc_minimizer_mm *scm, string_config *sc, int
     (*hpars).ext_f_site = ext_f_site;
     (*hpars).k = k;
     (*hpars).L0 = L0;
-    //(*hpars).L0_fxd = string_config_fixed_length(sc);
     (*hpars).L0_cfxd = sc_solver_compute_fixed_length_exp(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
     (*hpars).offset = L0 - (*hpars).L0_cfxd;
-    //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-    //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_multimin_fdfminimizer_steepest_descent, n_vars);
     (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-    //printf("Setting solver with stepsize %g\n", stepsize);
     gsl_multimin_fdfminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, stepsize, 1e-2);
-    //printf("(done)\n");
   }
   else
   {
@@ -1404,8 +1399,6 @@ void sc_minimizer_mm_init_heuristic(sc_minimizer_mm *scm, string_config *sc, int
     (*hpars).cmobile = &((*scm).cmobile);
     (*hpars).cmobile_map = &((*scm).cmobile_map);
     (*hpars).core_radsq = 1e-32;
-    //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-    //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_multimin_fdfminimizer_steepest_descent, n_vars);
     (*scm).solver = NULL;
   }
 }
@@ -1961,7 +1954,7 @@ void sc_minimizer_nm_reset(sc_minimizer_nm *scf)
       (*scf).smplx = smplx;
       printf("(done)\n");
     }
-  double stepsize = sqrt(sc_minimizer_var_mobile_coords(sc, &((*scf).top), &((*scf).cmobile), &((*scf).c_map), (*scf).c_data)) * 0.1;
+  double stepsize = sqrt(string_config_var_x((*scf).sc)) * 0.01;
   gsl_vector_set_all((*scf).smplx, stepsize);
   gsl_multimin_fminimizer_set((*scf).solver, &((*scf).solver_data), (*scf).c_data, (*scf).smplx);
   printf("(done)\n");
@@ -2030,6 +2023,25 @@ void sc_minimizer_nm_relax_diag(sc_minimizer_nm *scm, int n_steps, FILE *ofile)
 	  for (int vi = 0; vi < (*x).size; vi++) fprintf(ofile, "%g ", gsl_vector_get(x, vi));
 	  double l = total_length_func(x, (*scm).pars);
 	  fprintf(ofile, ": %g %g\n", gsl_multimin_fminimizer_size((*scm).solver), l);
+	}
+    }
+}
+
+void check_consistency_ctop(string_config *sc, contr_nbrlist *top)
+{
+  for (int i = 0; i < (*sc).top.v.len; i++)
+    {
+      int ci = (*top).map.e[i];
+      for (int ni = 0; ni < (*sc).top.v.e[i].len; ni++)
+	{
+	  int ii = (*sc).top.v.e[i].e[ni];
+	  int cii = (*top).map.e[ii];
+	  if (nbrlist_has_edge(&((*top).top.top), ci, cii)) {}
+	  else
+	    {
+	      printf("Inconsistency found between contracted and uncontracted topology!\n");
+	      exit(EXIT_FAILURE);
+	    }
 	}
     }
 }
@@ -2735,17 +2747,18 @@ void sc_minimizer_mm_reset(sc_minimizer_mm *scm)
   if (n_vars != (*scm).n_vars)
     {
       gsl_vector *nc_data = gsl_vector_alloc(n_vars);
-      sc_solver_expand(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).solver->x, nc_data); 
+      sc_solver_expand(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).solver->x, nc_data);
       gsl_multimin_fdfminimizer_free((*scm).solver);
       (*scm).n_vars = n_vars;
       (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, (*scm).n_vars);
       (*scm).solver_data.n = n_vars;
-      double init_step = sqrt(sc_minimizer_var_mobile_coords(sc, &((*scm).top), &(scm->cmobile), &(scm->c_map), scm->solver->x)) * 0.01;
-      gsl_multimin_fdfminimizer_set((*scm).solver, &((*scm).solver_data), nc_data, init_step, 0.01);
+      double init_step = sqrt(string_config_var_x((*scm).sc)) * 0.01;
       gsl_vector_free((*scm).c_data);
       (*scm).c_data = nc_data;
+      gsl_multimin_fdfminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, init_step, 0.01);
     }
 }
+
 
 int sc_minimizer_mm_solve(sc_minimizer_mm *scm, double tol)
 {
@@ -4373,7 +4386,7 @@ int lsc_h_minimizer_solve(lsc_h_minimizer *lscm, double tol)
 	{
 	  // Compute distance to last configuration
 	  double distsq = contr_pointset_distsq(x0, &cpars0, (*lscm).hsolver->x, cpars);
-	  printf("lsc_h_minimizer_solve (%g): err = %g\n", tol, sqrt(distsq));
+	  //printf("lsc_h_minimizer_solve (%g): err = %g\n", tol, sqrt(distsq));
 	  if (distsq < tolsq)
 	    {
 	      status = GSL_SUCCESS;
