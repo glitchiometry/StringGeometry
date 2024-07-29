@@ -1992,7 +1992,7 @@ void sc_minimizer_nm_check_merging(sc_minimizer_nm *scm, double merge_rad)
       //printf("Setting starting simplex\n");
       // double sc_minimizer_var_mobile_coords(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *c_map, const gsl_vector *c_data)
       gsl_vector *smplx = gsl_vector_alloc((*scm).n_vars);
-      double stepsize = sqrt(sc_minimizer_var_mobile_coords((*scm).sc, top, cmobile, c_map, c_data)) / (*cmobile).len * 0.01;
+      double stepsize = sqrt(string_config_var_x((*scm).sc)) * 0.01; //sqrt(sc_minimizer_var_mobile_coords((*scm).sc, top, cmobile, c_map, c_data)) / (*cmobile).len * 0.01;
       gsl_vector_set_all(smplx, stepsize);
       //printf("Setting solver\n");
       //      printf("Setting solver\n");
@@ -2925,7 +2925,7 @@ void sc_minimizer_mm_check_merging(sc_minimizer_mm *scm, double merge_rad)
 	  // Reset the solver
 	  (*scm).n_vars = (*c_data).size;
 	  (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, (*scm).n_vars);
-	  double stepsize = sqrt(sc_minimizer_var_mobile_coords((*scm).sc, top, cmobile, c_map, c_data)) / (*cmobile).len * 0.01;
+	  double stepsize = sqrt(string_config_var_x((*scm).sc)) * 0.01;//sqrt(sc_minimizer_var_mobile_coords((*scm).sc, top, cmobile, c_map, c_data)) / (*cmobile).len * 0.01;
 	  double tol = 1e-2;
 	  (*scm).solver_data.n = (*c_data).size;
 	  (*scm).c_data = c_data;
@@ -3932,7 +3932,7 @@ void add2linked_sc(linked_sc *lsc, edge_wtd_graph *top, array_int *emb)
 
 double contr_pointset_distsq(const gsl_vector *x0, coord_pars *cpars0, const gsl_vector *x1, coord_pars *cpars1)
 {
- tack_set *ts = (*cpars0).ts;
+  tack_set *ts = (*cpars0).ts;
   double distsq = 0;
   for (int mi = 0; mi < (*ts).mobile.len; mi++)
     {
@@ -3940,7 +3940,7 @@ double contr_pointset_distsq(const gsl_vector *x0, coord_pars *cpars0, const gsl
       int cvi0 = (*cpars0).map.e[vi];
       int cvi1 = (*cpars1).map.e[vi];
       int mcvi0 = (*cpars0).cmobile_map.e[cvi0];
-      int mcvi1 = (*cpars1).cmobile_map.e[cvi1];
+      int mcvi1 = (*cpars1).cmobile_map.e[cvi1];      
       const double *xvi0;
       const double *xvi1;
       if (mcvi0 > -1) xvi0 = gsl_vector_const_ptr(x0, (*cpars0).c_map.e[mcvi0]);
@@ -3976,6 +3976,7 @@ void coord_pars_from_tack_set(coord_pars *cpars, tack_set *ts)
       (*cpars).c_map.e[mi] = base;
       base += (*ts).dim;
     }
+  (*cpars).c_map.len = (*ts).mobile.len;
 }
 
 void transcribe_coord_pars(coord_pars *src, coord_pars *dest)
@@ -4081,6 +4082,7 @@ double lsc_solver_var_coords(coord_pars *cpars, const gsl_vector *x)
       var_coords += euclid_distsq(xci, &ax[0], (*(*cpars).ts).dim);
     }
   var_coords *= wt;
+  gsl_vector_free(ave_coords);
   return var_coords;
 }
 
@@ -4141,7 +4143,6 @@ void lsc_h_minimizer_init(lsc_h_minimizer *lscm, linked_sc *lsc, int i, double *
   (*lscm).hsolver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, (*lscm).hsolver_data.n);
   (*lscm).c_data = gsl_vector_alloc((*lscm).hsolver_data.n);
   // Load mobile coordinates into c_data
-  //printf("Defining coordinates:\n");
   for (int mi = 0; mi < (*ts).mobile.len; mi++)
     {
       double *xi = gsl_vector_ptr((*lscm).c_data, (*lscm).cpars.c_map.e[mi]);
@@ -4279,6 +4280,7 @@ void lsc_h_minimizer_check_merging(lsc_h_minimizer *lscm, double merge_rad)
 
 void lsc_h_minimizer_expand_clusters(lsc_h_minimizer *lscm)
 {
+  //  printf("lsc_h_minimizer_expand_clusters:\n");
   // Reset the coord_pars and (contracted) topologies associated with lscm, expand coordinates to include original mobile vertices.
   tack_set *ts = (*lscm).lsc->ts;
   array_int *ts_mobile = &(ts->mobile);
@@ -4320,11 +4322,12 @@ void lsc_h_minimizer_expand_clusters(lsc_h_minimizer *lscm)
   gsl_multimin_fdfminimizer_free((*lscm).hsolver);
   (*lscm).hsolver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
   gsl_multimin_fdfminimizer_set((*lscm).hsolver, &((*lscm).hsolver_data), (*lscm).c_data, stepsize, 1e-2);
+  //  printf("(done)\n");
 }
 
 int lsc_h_minimizer_relax(lsc_h_minimizer *lscm, double tol)
 {
-  //  printf("lsc_h_minimizer_relax: %g\n", tol);
+  //   printf("lsc_h_minimizer_relax: %g\n", tol);
   // Iterate, choose a convergence criterion (e.g. gradient norm)
   double tolsq = tol * tol;
   double merge_rad = 5 * tol;
@@ -4347,7 +4350,7 @@ int lsc_h_minimizer_relax(lsc_h_minimizer *lscm, double tol)
       else break;
       lsc_h_minimizer_check_merging(lscm, merge_rad);
     }
-  //printf("(done) count = %d, status = %d, dof = %ld\n", count, status, (*lscm).hsolver_data.n);
+  //  printf("(done) count = %d, status = %d, dof = %ld\n", count, status, (*lscm).hsolver_data.n);
   return status;
 }
 
@@ -4364,11 +4367,8 @@ char coord_pars_corresp(coord_pars *a, coord_pars *b)
 
 int lsc_h_minimizer_solve(lsc_h_minimizer *lscm, double tol)
 {
+  //  printf("lsc_h_minimizer_solve:\n");
   // Store last configuration (excluding topology), measure distance between consecutive minima
-  array_int map;
-  aarray_int fibers;
-  array_int cmobile_map;
-  array_int cmobile;
   lsc_heuristic_pars *hpars = &((*lscm).hpars);
   coord_pars *cpars = &((*lscm).cpars);
   coord_pars cpars0;
@@ -4385,10 +4385,14 @@ int lsc_h_minimizer_solve(lsc_h_minimizer *lscm, double tol)
       if (status == GSL_SUCCESS) 
 	{
 	  // Compute distance to last configuration
-	  double distsq = contr_pointset_distsq(x0, &cpars0, (*lscm).hsolver->x, cpars);
+	  //printf("Computing error:\n");
+	  double *df = gsl_vector_ptr(gsl_multimin_fdfminimizer_gradient((*lscm).hsolver), 0);
+	  double distsq = contr_pointset_distsq(x0, &cpars0, (*lscm).hsolver->x, cpars) + euclid_normsq(df, (*lscm).hsolver_data.n);
+	  //printf("(done)\n");
 	  //printf("lsc_h_minimizer_solve (%g): err = %g\n", tol, sqrt(distsq));
 	  if (distsq < tolsq)
 	    {
+	      //printf("Minimization succeeded!\n");
 	      status = GSL_SUCCESS;
 	      break;
 	    }
@@ -4397,10 +4401,12 @@ int lsc_h_minimizer_solve(lsc_h_minimizer *lscm, double tol)
       if (coord_pars_corresp(&cpars0, cpars)) {}
       else
 	{
+	  //printf("Transcribing topology data\n");
 	  free_coord_pars(&cpars0);
 	  gsl_vector_free(x0);
 	  transcribe_coord_pars(cpars, &cpars0);
 	  x0 = gsl_vector_alloc((*lscm).hsolver_data.n);
+	  //	  printf("(done)\n");
 	}
       gsl_vector_memcpy(x0, (*lscm).hsolver->x);
       // Reset/expand the solver
@@ -4409,6 +4415,10 @@ int lsc_h_minimizer_solve(lsc_h_minimizer *lscm, double tol)
       for (int i = 0; i < 5; i++) lsc_h_minimizer_iterate(lscm);
     }
   // Free auxiliary structures
+  //printf("Freeing auxiliary structures\n");
+  gsl_vector_free(x0);
+  free_coord_pars(&cpars0);
+  //printf("(done)\n");
   return status;
 }
 
