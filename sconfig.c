@@ -14,23 +14,17 @@
 #define SC_CONST_L_SOLVER_ROTATED 1
 #define SC_CONST_L_SOLVER_MINIMIZED 2
 
-int total_length_func_counter = 0;
-int grad_total_length_func_counter = 0;
-int comp_total_length_func_counter = 0;
+int total_length_f_counter = 0;
+int total_length_df_counter = 0;
+int total_length_fdf_counter = 0;
 
 int sc_minimizer_mm_counter = 0;
 int sc_minimizer_rf_counter = 0;
-int sc_minimizer_nm_counter = 0;
 int sc_minimizer_sd_counter = 0;
 
 int get_sc_minimizer_sd_counter()
 {
   return sc_minimizer_sd_counter;
-}
-
-int get_sc_minimizer_nm_counter()
-{
-  return sc_minimizer_nm_counter;
 }
 
 int get_sc_minimizer_mm_counter()
@@ -49,19 +43,44 @@ void get_sc_minimizer_counters(int *a, int *b)
   (*b) = sc_minimizer_rf_counter;
 }
 
-int get_total_length_func_counter()
+int get_total_length_f_counter()
 {
-  return total_length_func_counter;
+  return total_length_f_counter;
 }
 
-int get_grad_total_length_func_counter()
+int get_total_length_df_counter()
 {
-  return grad_total_length_func_counter;
+  return total_length_df_counter;
 }
 
-int get_comp_total_length_func_counter()
+int get_total_length_fdf_counter()
 {
-  return comp_total_length_func_counter;
+  return total_length_fdf_counter;
+}
+
+void reset_total_length_f_counter()
+{
+  total_length_f_counter = 0;
+}
+
+void reset_total_length_df_counter()
+{
+  total_length_df_counter = 0;
+}
+
+void reset_total_length_fdf_counter()
+{
+  total_length_fdf_counter = 0;
+}
+
+void reset_total_length_counters()
+{
+  total_length_fdf_counter = total_length_df_counter = total_length_f_counter = 0;
+}
+
+void reset_sc_minimizer_sd_counter()
+{
+  sc_minimizer_sd_counter = 0;
 }
 
 int glcs_count_tally[count_tally_size];
@@ -113,13 +132,25 @@ void string_config_rotate(string_config *sc, gsl_matrix *Q, char mode)
 	  for (int dii = 0; dii < (*sc).dim; dii++) xi[di] += get_op_Q(Q, di, dii) * x0[dii];
 	}
     }
-  /*double ext_f[(*sc).dim];
-  for (int di = 0; di < (*sc).dim; di++) ext_f[di] = (*sc).ext_f[di];
-  for (int di = 0; di < (*sc).dim; di++)
+}
+
+void string_config_randomize_coords(string_config *sc, double epsilon)
+{
+  for (int i = 0; i < (*sc).top.v.len; i++)
     {
-      (*sc).ext_f[di] = 0;
-      for (int dii = 0; dii < (*sc).dim; dii++) (*sc).ext_f[di] += get_op_Q(Q, di, dii) * ext_f[dii];
-      }*/
+      double *xi = (double *) (*sc).pos.e[i];
+      for (int di = 0; di < (*sc).dim; di++) xi[di] += epsilon * (rnd() - 0.5);
+    }
+}
+
+void string_config_randomize_mobile_coords(string_config *sc, double epsilon)
+{
+  for (int mi = 0; mi < (*sc).mobile.len; mi++)
+    {
+      int i = (*sc).mobile.e[mi];
+      double *xi = (double *) (*sc).pos.e[i];
+      for (int di = 0; di < (*sc).dim; di++) xi[di] += epsilon * (rnd() - 0.5);
+    }
 }
 
 double string_config_timestep(string_config *sc)
@@ -140,6 +171,7 @@ void add_vertex_string_config(string_config *sc, double *x)
   extend_nbrlist(&((*sc).top));
   add2array_int(&((*sc).fm_addr), (*sc).mobile.len);
   add2array_int(&((*sc).mobile), vi);
+  add2array_char(&((*sc).is_fxd), 0);
   extend_aarray_int(&((*sc).edge_wts));
   (*sc).n_s_vars += (*sc).dim;
 }
@@ -156,7 +188,6 @@ void remove_vertex_string_config(string_config *sc, int i)
       (*sc).fm_addr.e[ii] = fmi;
     }
   remove_array_char(&((*sc).is_fxd), i);
-  //if ((*sc).ext_f_site == i) (*sc).ext_f_site = -1;
   for (int ni = 0; ni < (*sc).top.v.e[i].len; ni++)
     {
       int ii = (*sc).top.v.e[i].e[ni];
@@ -172,7 +203,6 @@ int add_edge_string_config(string_config *sc, int i, int j, int wt)
 {
   if (i != j)
     {
-      // "'(i)ndex' of 'i' with respect to 'j'"
       int iji = add_edge_nbrlist_safe(&((*sc).top), i, j);
       if (iji > -1)
 	{
@@ -248,6 +278,7 @@ int string_config_init(string_config *sc, int nvs, int dim)
     }
   (*sc).mobile.len = nvs;
   (*sc).fm_addr.len = nvs;
+  (*sc).is_fxd.len = nvs;
   nbrlist_init_precise(&((*sc).top), nvs);
   extend_nbrlist_n(&((*sc).top), nvs);
   aarray_int_init(&((*sc).edge_wts), nvs);
@@ -680,52 +711,32 @@ const double *sc_solver_vertex_coords_exp2(string_config *sc, int ci, contr_nbrl
   return (*cmobile_map).e[ci] == -1 ? string_config_vertex_coords(sc, i) : gsl_vector_const_ptr(c_data, (*c_map).e[(*cmobile_map).e[ci]]);
 }
 
-double mobile_length_func(const gsl_vector *c_data, void *pars)
+double mobile_length(const gsl_vector *c_data, void *pars)
 {
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
-  return mobile_length_func_exp(c_data, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq);
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
+  return mobile_length_exp(c_data, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq);
 }
 
-double mobile_length_func_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq)
+double mobile_length_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq)
 {
   double L = 0;
-  nbrlist nw;
-  aarray_int e_wts;
-  array_int mobile;
-  array_int mobile_map;
-  if (top != NULL)
+  for (int mci = 0; mci < (*cmobile).len; mci++)
     {
-      nw = (*top).top.top;
-      e_wts = (*top).top.edge_wts;
-      mobile = (*cmobile);
-      mobile_map = (*cmobile_map);
-    }
-  else
-    {
-      //printf("Evaluating total_length_func with original topology and edge weights (exception!)\n");
-      nw = (*sc).top;
-      e_wts = (*sc).edge_wts;
-      mobile = (*sc).mobile;
-      mobile_map = (*sc).fm_addr;
-    }
-  for (int mci = 0; mci < mobile.len; mci++)
-    {
-      int ci = mobile.e[mci];
+      int ci = (*cmobile).e[mci];
       const double *xi = gsl_vector_const_ptr(c_data, (*c_map).e[mci]);
-      for (int ni = 0; ni < nw.v.e[ci].len; ni++)
+      for (int ni = 0; ni < (*top).top.top.v.e[ci].len; ni++)
 	{
-	  int cii = nw.v.e[ci].e[ni];
-	  int rcii = cii;
-	  
-	  if (top != NULL)
-	    {
-	      rcii = (*top).fibers.e[cii].e[0];
-	    }
-	  if (cii < ci || (*sc).is_fxd.e[rcii]) {}
+	  int cii = (*top).top.top.v.e[ci].e[ni];
+	  int mcii = (*cmobile_map).e[cii];
+	  if (mcii < mci) {}
 	  else continue;
 	  const double *xii;
-	  if ((*sc).is_fxd.e[rcii]) xii = string_config_vertex_coords(sc, rcii);
-	  else xii = gsl_vector_const_ptr(c_data, (*c_map).e[mobile_map.e[cii]]);
+	  if (mcii > -1) xii = gsl_vector_const_ptr(c_data, (*c_map).e[mcii]);
+	  else
+	    {
+	      int rii = (*top).fibers.e[cii].e[0];
+	      xii = string_config_vertex_coords(sc, rii);
+	    }
 	  double delxsq = 0;
 	  for (int di = 0; di < (*sc).dim; di++)
 	    {
@@ -733,61 +744,43 @@ double mobile_length_func_exp(const gsl_vector *c_data, string_config *sc, array
 	      delxsq += delx * delx;
 	    }
 	  if (delxsq <= core_radsq) continue;
-	  double incr = e_wts.e[ci].e[ni] * sqrt(delxsq);
+	  double incr = (*top).top.edge_wts.e[ci].e[ni] * sqrt(delxsq);
 	  L += incr;
 	}
     }
-  //  printf("(done)\n");
   return L;  
 }
 
-double total_length_func_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq)
+double total_length_f_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq)
 {
-  //  printf("total_length_func_exp:\n");
-  total_length_func_counter += 1;
+  //  printf("total_length_f_exp:\n");
+  total_length_f_counter += 1;
   double L = 0;
-  nbrlist nw;
-  aarray_int e_wts;
-  if (top != NULL)
+  for (int ci = 0; ci < (*top).top.top.v.len; ci++)
     {
-      nw = (*top).top.top;
-      e_wts = (*top).top.edge_wts;
-    }
-  else
-    {
-      //printf("Evaluating total_length_func with original topology and edge weights (exception!)\n");
-      nw = (*sc).top;
-      e_wts = (*sc).edge_wts;
-    }
-  for (int ci = 0; ci < nw.v.len; ci++)
-    {
-      int ri;
       const double *xi;
-      if (top != NULL)
+      int mci = (*cmobile_map).e[ci];
+      if (mci > -1)
 	{
-	  ri = (*top).fibers.e[ci].e[0];
-	  xi = sc_solver_vertex_coords_exp2(sc, ci, top, cmobile_map, c_map, c_data);
+	  xi = gsl_vector_const_ptr(c_data, (*c_map).e[mci]);
 	}
-      else // RESUME: This should be phased out (solvers should probably use a contracted neighbor list)
+      else
 	{
-	  ri = ci;
-	  xi = sc_solver_vertex_coords_exp(sc, ci, c_map, c_data);
+	  int ri = (*top).fibers.e[ci].e[0];
+	  xi = string_config_vertex_coords(sc, ri);
 	}
-      for (int ni = 0; ni < nw.v.e[ci].len; ni++)
+      for (int ni = 0; ni < (*top).top.top.v.e[ci].len; ni++)
 	{
-	  int cii = nw.v.e[ci].e[ni];
+	  int cii = (*top).top.top.v.e[ci].e[ni];
 	  if (cii < ci) {}
 	  else continue;
-	  int rii = cii;
 	  const double *xii;
-	  if (top != NULL)
-	    {
-	      rii = (*top).fibers.e[cii].e[0];
-	      xii = sc_solver_vertex_coords_exp2(sc, cii, top, cmobile_map, c_map, c_data);
-	    }
+	  int mcii = (*cmobile_map).e[cii];
+	  if (mcii > -1) xii = gsl_vector_const_ptr(c_data, (*c_map).e[mcii]);
 	  else
 	    {
-	      xii = sc_solver_vertex_coords_exp(sc, rii, c_map, c_data);
+	      int rii = (*top).fibers.e[cii].e[0];
+	      xii = string_config_vertex_coords(sc, rii);
 	    }
 	  double delxsq = 0;
 	  for (int di = 0; di < (*sc).dim; di++)
@@ -796,75 +789,59 @@ double total_length_func_exp(const gsl_vector *c_data, string_config *sc, array_
 	      delxsq += delx * delx;
 	    }
 	  if (delxsq <= core_radsq) continue;
-	  double incr = e_wts.e[ci].e[ni] * sqrt(delxsq);
+	  double incr = (*top).top.edge_wts.e[ci].e[ni] * sqrt(delxsq);
 	  L += incr;
 	}
     }
-  //  printf("(done)\n");
   return L;
 }
 
-double total_length_func(const gsl_vector *c_data, void *pars)
+void total_length_pars_init(total_length_pars *tlf_pars, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map)
 {
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
-  return total_length_func_exp(c_data, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq);
+  (*tlf_pars).core_radsq = 1e-32;
+  (*tlf_pars).sc = sc;
+  (*tlf_pars).c_map = c_map;
+  (*tlf_pars).top = top;
+  (*tlf_pars).cmobile = cmobile;
+  (*tlf_pars).cmobile_map = cmobile_map;
 }
 
- void grad_total_length_func_exp(const gsl_vector *x, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq, gsl_vector *df)
+double total_length_f(const gsl_vector *c_data, void *pars)
 {
-  grad_total_length_func_counter += 1;
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
+  return total_length_f_exp(c_data, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq);
+}
+
+ void total_length_df_exp(const gsl_vector *x, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq, gsl_vector *df)
+{
+  total_length_df_counter += 1;
   double *df_ = gsl_vector_ptr(df, 0);
   gsl_vector_set_zero(df);
-  array_int mobile, mobile_addr;
-  nbrlist nw;
-  aarray_int e_wts;
-  if (top != NULL && cmobile != NULL && cmobile_map != NULL)
+  for (int mi = 0; mi < (*cmobile).len; mi++)
     {
-      nw = (*top).top.top;
-      mobile = (*cmobile);
-      mobile_addr = (*cmobile_map);
-      e_wts = (*top).top.edge_wts;
-    }
-  else
-    {
-      nw = (*sc).top;
-      mobile = (*sc).mobile;
-      mobile_addr = (*sc).fm_addr;
-      e_wts = (*sc).edge_wts;
-    }
-  for (int mi = 0; mi < mobile.len; mi++)
-    {
-      int ci = mobile.e[mi];
-      int ri = ci;
+      int ci = (*cmobile).e[mi];
       const double *xi;
-      if (top != NULL)
+      xi = gsl_vector_const_ptr(x, (*c_map).e[mi]);
+      double *fi = gsl_vector_ptr(df, (*c_map).e[mi]);
+      for (int ni = 0; ni < (*top).top.top.v.e[ci].len; ni++)
 	{
-	  ri = (*top).fibers.e[ci].e[0];
-	}
-      xi = gsl_vector_const_ptr(x, (*c_map).e[mobile_addr.e[ci]]);
-      double *fi = gsl_vector_ptr(df, (*c_map).e[mobile_addr.e[ci]]);
-      for (int ni = 0; ni < nw.v.e[ci].len; ni++)
-	{
-	  int cii = nw.v.e[ci].e[ni];
-	  int rii = cii;
-	  if (top != NULL) rii = (*top).fibers.e[cii].e[0];
-	  if ((rii < ri) || (*sc).is_fxd.e[rii]) {}
+	  int cii = (*top).top.top.v.e[ci].e[ni];
+	  int mcii = (*cmobile_map).e[cii];
+	  if (mcii < mi) {}
 	  else continue;
 	  double delx[(*sc).dim];
 	  const double *xii;
-	  double *fii;
-	  if ((*sc).is_fxd.e[rii])
+	  double *fii = NULL;
+	  if (mcii > -1)
 	    {
+	      xii = gsl_vector_const_ptr(x, (*c_map).e[mcii]);
+	      fii = gsl_vector_ptr(df, (*c_map).e[mcii]);
+	    }
+	  else
+	    {
+	      int rii = (*top).fibers.e[cii].e[0];
 	      xii = string_config_vertex_coords(sc, rii);
 	    }
-	  else 
-	    {
-	      int mii = mobile_addr.e[cii];
-	      xii = gsl_vector_const_ptr(x, (*c_map).e[mii]);
-	      fii = gsl_vector_ptr(df, (*c_map).e[mii]);
-	    }
-	  if (xii != NULL) {}
-	  else continue;
 	  double delxsq = 0;
 	  for (int di = 0; di < (*sc).dim; di++)
 	    {
@@ -876,13 +853,13 @@ double total_length_func(const gsl_vector *c_data, void *pars)
 	      continue;
 	    }
 	  delxsq = sqrt(delxsq);
-	  delxsq = e_wts.e[ci].e[ni] / delxsq;
+	  delxsq = (*top).top.edge_wts.e[ci].e[ni] / delxsq;
 	  for (int di = 0; di < (*sc).dim; di++) 
 	    {
 	      delx[di] *= delxsq;
 	      fi[di] += delx[di];
 	    }
-	  if (!(*sc).is_fxd.e[rii]) for (int di = 0; di < (*sc).dim; di++) fii[di] -= delx[di];
+	  if (fii != NULL) for (int di = 0; di < (*sc).dim; di++) fii[di] -= delx[di];
 	}
     }
  }
@@ -901,11 +878,10 @@ double total_length_func(const gsl_vector *c_data, void *pars)
           
  */
 
-// NOTE: it could be slightly more efficient to compute increments as symmetric matrices (storing
+// NOTE: it is slightly more efficient to compute increments as symmetric matrices (storing
 //        upper or lower entries w/ diagonal) and then copying other entries for each mobile vertex
-//    (and then symmetrizing the matrix). This is slightly more complicated, but has been implemented
-//    successfully in the sc_Lagrange_solver.
-void length_func_df_incr(const double *xi, const double *xj, int wt, gsl_matrix *incr_H)
+//    (and then symmetrizing the matrix).
+char grad_length_df_incr(const double *xi, const double *xj, int wt, gsl_matrix *incr_H)
 {
   int dim = (*incr_H).size1;
   double disp[dim];
@@ -915,6 +891,8 @@ void length_func_df_incr(const double *xi, const double *xj, int wt, gsl_matrix 
       disp[di] = xi[di] - xj[di];
       delxsq += disp[di] * disp[di];
     }
+  if (delxsq > 0) {}
+  else return 0;
   double inv_delxsq = 1. / delxsq;
   double inv_dist = sqrt(inv_delxsq);
   double factor = wt * inv_dist * inv_delxsq;
@@ -935,21 +913,24 @@ void length_func_df_incr(const double *xi, const double *xj, int wt, gsl_matrix 
 	  gsl_matrix_set(incr_H, di, dii, gsl_matrix_get(incr_H, dii, di));
 	}
       gsl_matrix_set(incr_H, di, di, gsl_matrix_get(incr_H, di, di) * factor);
-    }  
+    }
+  return 1;
 }
 
-void length_func_fdf_incr(const double *xi, const double *xj, int wt, gsl_matrix *incr_H, gsl_vector *incr_f)
+char grad_length_fdf_incr(const double *xi, const double *xj, int wt, gsl_matrix *incr_H, gsl_vector *incr_f)
 {
-  gsl_vector_set_zero(incr_f);
-  gsl_matrix_set_zero(incr_H);
+  double delxsq = 0;
   int dim = (*incr_H).size1;
   double disp[dim];
-  double delxsq = 0;
   for (int di = 0; di < dim; di++)
     {
       disp[di] = xi[di] - xj[di];
       delxsq += disp[di] * disp[di];
     }
+  if (delxsq > 0) {}
+  else return 0;
+  gsl_vector_set_zero(incr_f);
+  gsl_matrix_set_zero(incr_H);
   double inv_dist = 1. / sqrt(delxsq);
   double factor = wt * inv_dist;
   for (int di = 0; di < dim; di++)
@@ -975,16 +956,17 @@ void length_func_fdf_incr(const double *xi, const double *xj, int wt, gsl_matrix
 	}
       gsl_matrix_set(incr_H, di, di, gsl_matrix_get(incr_H, di, di) * factor);
     }
+  return 1;
 }
 
-int length_func_fdf(const gsl_vector *x, void *pars, gsl_vector *df, gsl_matrix *H)
+int grad_length_fdf(const gsl_vector *x, void *pars, gsl_vector *df, gsl_matrix *H)
 {
-  //printf("length_func_fdf\n");
+  //printf("grad_length_fdf\n");
   if ((*df).size > 0) {}
   else return GSL_ENOPROGJ;
   gsl_vector_set_zero(df);
   gsl_matrix_set_zero(H);
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
   contr_nbrlist *top = (*tlf_pars).top;
   string_config *sc = (*tlf_pars).sc;
   array_int *cmobile = (*tlf_pars).cmobile;
@@ -1015,7 +997,13 @@ int length_func_fdf(const gsl_vector *x, void *pars, gsl_vector *df, gsl_matrix 
 	      int fii = (*top).fibers.e[cii].e[0];
 	      xcii = string_config_vertex_coords(sc, fii);
 	    }
-	  length_func_fdf_incr(xci, xcii, (*top).top.edge_wts.e[ci].e[ni], incr, incr_f);
+	  char nonzero = grad_length_fdf_incr(xci, xcii, (*top).top.edge_wts.e[ci].e[ni], incr, incr_f);
+	  if (nonzero) {}
+	  else
+	    {
+	      //	      printf("%d %d coincide\n", ci, cii);
+	      continue;
+	    }
 	  gsl_matrix_add(&(H_ci.matrix), incr);
 	  gsl_vector_add(&(dfci_.vector), incr_f);
 	  if ((*cmobile_map).e[cii] > -1)
@@ -1039,13 +1027,12 @@ int length_func_fdf(const gsl_vector *x, void *pars, gsl_vector *df, gsl_matrix 
   return GSL_SUCCESS;
 }
 
-int Hess_length_func(const gsl_vector *x, void *pars, gsl_matrix *H)
+int grad_length_df(const gsl_vector *x, void *pars, gsl_matrix *H)
 {
   if ((*H).size1 > 0) {}
   else return GSL_ENOPROGJ;
-  //printf("length_func_df:\n");
   gsl_matrix_set_zero(H);
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
   contr_nbrlist *top = (*tlf_pars).top;
   string_config *sc = (*tlf_pars).sc;
   array_int *cmobile = (*tlf_pars).cmobile;
@@ -1058,7 +1045,6 @@ int Hess_length_func(const gsl_vector *x, void *pars, gsl_matrix *H)
     {
       int ci = (*cmobile).e[cmi];
       const double *xci = gsl_vector_const_ptr(x, (*c_map).e[cmi]);
-      //double *dfci = gsl_vector_ptr(df, (*c_map).e[cmi]);
       gsl_matrix_view H_ci = gsl_matrix_submatrix(H, (*c_map).e[cmi], (*c_map).e[cmi], (*sc).dim, (*sc).dim);
       for (int ni = 0; ni < (*top).top.top.v.e[ci].len; ni++)
 	{
@@ -1072,7 +1058,13 @@ int Hess_length_func(const gsl_vector *x, void *pars, gsl_matrix *H)
 	      int fii = (*top).fibers.e[cii].e[0];
 	      xcii = string_config_vertex_coords(sc, fii);
 	    }
-	  length_func_df_incr(xci, xcii, (*top).top.edge_wts.e[ci].e[ni], incr);
+	  char nonzero = grad_length_df_incr(xci, xcii, (*top).top.edge_wts.e[ci].e[ni], incr);
+	  if (nonzero) {}
+	  else
+	    {
+	      //	      printf("%d %d coincide\n", ci, cii);
+	      continue;
+	    }
 	  gsl_matrix_add(&(H_ci.matrix), incr);
 	  if ((*cmobile_map).e[cii] > -1)
 	    {
@@ -1087,28 +1079,27 @@ int Hess_length_func(const gsl_vector *x, void *pars, gsl_matrix *H)
 	}
     }
   gsl_matrix_free(incr);
-  //printf("(done)\n");
   return GSL_SUCCESS;
 }
 
-int grad_length_func(const gsl_vector *x, void *pars, gsl_vector *df)
+int grad_length_f(const gsl_vector *x, void *pars, gsl_vector *df)
 {
   if ((*df).size > 0) {}
   else return GSL_SUCCESS;
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
-  grad_total_length_func_exp(x, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq, df);
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
+  total_length_df_exp(x, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq, df);
   return GSL_SUCCESS;
 }
 
-void grad_total_length_func(const gsl_vector *x, void *pars, gsl_vector *df)
+void total_length_df(const gsl_vector *x, void *pars, gsl_vector *df)
 {
   if ((*df).size > 0) {}
   else return;
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
-  grad_total_length_func_exp(x, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq, df);
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
+  total_length_df_exp(x, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq, df);
 }
 
- void comp_total_length_func_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq, double *f, gsl_vector *df)
+void total_length_fdf_exp(const gsl_vector *c_data, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, double core_radsq, double *f, gsl_vector *df)
 {
   array_int mobile, mobile_addr;
   nbrlist nw;
@@ -1127,8 +1118,8 @@ void grad_total_length_func(const gsl_vector *x, void *pars, gsl_vector *df)
       nw = (*sc).top;
       e_wts = (*sc).edge_wts;
     }
-  //printf("comp_total_length_func_exp:\n");
-  comp_total_length_func_counter += 1;
+  //printf("total_length_fdf_exp:\n");
+  total_length_fdf_counter += 1;
   (*f) = 0;
   double *df_ = gsl_vector_ptr(df, 0);
   gsl_vector_set_zero(df);
@@ -1192,23 +1183,34 @@ void grad_total_length_func(const gsl_vector *x, void *pars, gsl_vector *df)
     }
 }
 
-void comp_total_length_func(const gsl_vector *c_data, void *pars, double *f, gsl_vector *df)
+void total_length_fdf(const gsl_vector *c_data, void *pars, double *f, gsl_vector *df)
 {
   if ((*df).size > 0) {}
   else
   {
-    (*f) = total_length_func(c_data, pars);
+    (*f) = total_length_f(c_data, pars);
     return;
   }
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) pars;
-  comp_total_length_func_exp(c_data, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq, f, df);  
-} // END comp_total_length_func
+  total_length_pars *tlf_pars = (total_length_pars *) pars;
+  total_length_fdf_exp(c_data, (*tlf_pars).sc, (*tlf_pars).c_map, (*tlf_pars).top, (*tlf_pars).cmobile, (*tlf_pars).cmobile_map, (*tlf_pars).core_radsq, f, df);  
+} // END total_length_fdf
 
 // Heuristic function used to find initial guesses for the Lagrange solver
-// RESUME: Determine what is wrong with this function (i.e. why it causes vertices to merge erroneously.)
-double const_L_heuristic(const gsl_vector *c_data, void *pars)
+void heuristic_pars_init(heuristic_pars *hpars, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, int ext_f_site, double *ext_f, double L0, double k)
 {
-  //  printf("const_L_heuristic:\n");
+  (*hpars).sc = sc;
+  (*hpars).top = top;
+  (*hpars).cmobile = cmobile;
+  (*hpars).cmobile_map = cmobile_map;
+  (*hpars).c_map = c_map;
+  (*hpars).ext_f_site = ext_f_site;
+  (*hpars).ext_f = ext_f;
+  (*hpars).L0 = L0;
+  (*hpars).k = k;
+}
+
+double heuristic_f(const gsl_vector *c_data, void *pars)
+{
   heuristic_pars *hpars = (heuristic_pars *) pars;
   contr_nbrlist *top = (*hpars).top;
   array_int *cmobile = (*hpars).cmobile;
@@ -1224,22 +1226,14 @@ double const_L_heuristic(const gsl_vector *c_data, void *pars)
     {
       H -= x_ef[di] * (*hpars).ext_f[di];
     }
-  double L_mobile = mobile_length_func_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq); // RESUME: define this!
-  double L = total_length_func_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
+  double L_mobile = mobile_length_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
+  double L = total_length_f_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
   L -= (*hpars).L0;
   H += 0.5 * (*hpars).k * L * L;
-  /*
-  if (L > (*hpars).L0)
-    {
-      L -= (*hpars).L0;
-      H += 0.5 * (*hpars).k * L * L;
-    }
-  */
-  //  printf("(done: const_L_heuristic)\n");
   return H;
 }
 
-void const_L_heuristic_df(const gsl_vector *c_data, void *pars, gsl_vector *df)
+void heuristic_df(const gsl_vector *c_data, void *pars, gsl_vector *df)
 {
   heuristic_pars *hpars = (heuristic_pars *) pars;
   contr_nbrlist *top = (*hpars).top;
@@ -1250,29 +1244,23 @@ void const_L_heuristic_df(const gsl_vector *c_data, void *pars, gsl_vector *df)
   string_config *sc = (*hpars).sc;
   int c_efs = (*top).map.e[(*hpars).ext_f_site];
   int m_ef = (*cmobile_map).e[c_efs];
-  //const double *x_ef = gsl_vector_const_ptr(c_data, (*c_map).e[m_ef]);
-  //  gsl_vector_set_zero(df); // RESUME: consider optimizing with a custom routine after verifying correctness  
-  double L = total_length_func_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
-  //  if (L > (*hpars).L0)
-  //{
-  total_length_func_pars tlf_pars;
+  double L = total_length_f_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
+  total_length_pars tlf_pars;
   tlf_pars.sc = sc;
   tlf_pars.top = top;
   tlf_pars.cmobile = cmobile;
   tlf_pars.cmobile_map = cmobile_map;
   tlf_pars.c_map = c_map;
   tlf_pars.core_radsq = core_radsq;
-  comp_total_length_func(c_data, &tlf_pars, &L, df);
+  total_length_fdf(c_data, &tlf_pars, &L, df);
   double prefactor = (*hpars).k * (L - (*hpars).L0);
   gsl_vector_scale(df, prefactor);
-  //}
   double *f_ef = gsl_vector_ptr(df, (*c_map).e[m_ef]);
   for (int di = 0; di < (*sc).dim; di++) f_ef[di] -= (*hpars).ext_f[di];
 }
 
-void const_L_heuristic_fdf(const gsl_vector *c_data, void *pars, double *f, gsl_vector *df)
+void heuristic_fdf(const gsl_vector *c_data, void *pars, double *f, gsl_vector *df)
 {
-  //printf("const_L_heuristic_fdf:\n");
   heuristic_pars *hpars = (heuristic_pars *) pars;
   contr_nbrlist *top = (*hpars).top;
   array_int *cmobile = (*hpars).cmobile;
@@ -1283,31 +1271,65 @@ void const_L_heuristic_fdf(const gsl_vector *c_data, void *pars, double *f, gsl_
   int c_efs = (*top).map.e[(*hpars).ext_f_site];
   int m_ef = (*cmobile_map).e[c_efs];
   const double *x_ef = gsl_vector_const_ptr(c_data, (*c_map).e[m_ef]);
-  //  gsl_vector_set_zero(df); // RESUME: consider optimizing with a custom routine after verifying correctness
-  double L = total_length_func_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
-  //  if (L > (*hpars).L0)
-  // {
-  total_length_func_pars tlf_pars;
+  double L = total_length_f_exp(c_data, sc, c_map, top, cmobile, cmobile_map, core_radsq);
+  total_length_pars tlf_pars;
   tlf_pars.sc = sc;
   tlf_pars.top = top;
   tlf_pars.cmobile = cmobile;
   tlf_pars.cmobile_map = cmobile_map;
   tlf_pars.c_map = c_map;
   tlf_pars.core_radsq = core_radsq;
-  grad_total_length_func(c_data, &tlf_pars, df);
+  total_length_df(c_data, &tlf_pars, df);
   double diff = L - (*hpars).L0;
   double prefactor = (*hpars).k * diff;
   (*f) = prefactor * 0.5 * diff;
   gsl_vector_scale(df, prefactor);
-  //}
-  //else (*f) = 0;
   double *f_ef = gsl_vector_ptr(df, (*c_map).e[m_ef]);
   for (int di = 0; di < (*sc).dim; di++)
     {
       f_ef[di] -= (*hpars).ext_f[di];
       (*f) -= (*hpars).ext_f[di] * x_ef[di];
     }
-  //printf("(done: const_L_heuristic_fdf)\n");
+}
+
+int grad_heuristic_f(const gsl_vector *c_data, void *pars, gsl_vector *f)
+{
+  heuristic_df(c_data, pars, f);
+  return GSL_SUCCESS;
+}
+
+int grad_heuristic_df(const gsl_vector *c_data, void *pars, gsl_matrix *df)
+{
+  /*
+    H = 0.5 * k * (L - L0)^2 - ext_f . x_ef
+    dH = k * (L - L0) * dL - ext_f . dx_ef
+    d^2H = k * "dL dL" + k * (L - L0) * d^2L
+         dL = sum_{ij} w_{ij} (x_i-x_j).(dx_i-dx_j)/|x_i-x_j|
+   */
+  heuristic_pars *hpars = (heuristic_pars *) pars;
+  total_length_pars tlf_pars;
+  total_length_pars_init(&tlf_pars, (*hpars).sc, (*hpars).c_map, (*hpars).top, (*hpars).cmobile, (*hpars).cmobile_map);
+  gsl_vector *dL = gsl_vector_alloc((*df).size1);
+  double L;
+  total_length_fdf(c_data, &tlf_pars, &L, dL);
+  grad_length_df(c_data, &tlf_pars, df);
+  gsl_matrix_scale(df, L - (*hpars).L0);
+  gsl_matrix_view RdL = gsl_matrix_view_vector(dL, 1, (*dL).size);
+  gsl_blas_dgemm(CblasTrans, CblasNoTrans, (*hpars).k, &(RdL.matrix), &(RdL.matrix), (*hpars).k, df);
+}
+
+int grad_heuristic_fdf(const gsl_vector *c_data, void *pars, gsl_vector *f, gsl_matrix *df)
+{
+  heuristic_pars *hpars = (heuristic_pars *) pars;
+  total_length_pars tlf_pars;
+  total_length_pars_init(&tlf_pars, (*hpars).sc, (*hpars).c_map, (*hpars).top, (*hpars).cmobile, (*hpars).cmobile_map);
+  double L;
+  total_length_fdf(c_data, &tlf_pars, &L, f);
+  grad_length_df(c_data, &tlf_pars, df);
+  gsl_matrix_scale(df, L - (*hpars).L0);
+  gsl_matrix_view RdL = gsl_matrix_view_vector(f, 1, (*f).size);
+  gsl_blas_dgemm(CblasTrans, CblasNoTrans, (*hpars).k, &(RdL.matrix), &(RdL.matrix), (*hpars).k, df);
+  gsl_vector_scale(f, (*hpars).k);
 }
 
 double *sc_minimizer_vertex_coords(string_config *sc, int i, contr_nbrlist *top, array_int *cmobile_map, array_int *c_map, gsl_vector *c_data)
@@ -1324,21 +1346,16 @@ double *sc_minimizer_vertex_coords(string_config *sc, int i, contr_nbrlist *top,
 
 void sc_minimizer_mm_init_heuristic(sc_minimizer_mm *scm, string_config *sc, int ext_f_site, double *ext_f, double L0, double k)
 {
-  //  printf("sc_minimizer_mm_init_heuristic\n");
   (*scm).sc = sc;
   fix_point_string_config(sc, ext_f_site);
   contr_nbrlist_init(&((*scm).top), &((*sc).top), &((*sc).edge_wts));
   prep_contr_list(&((*sc).mobile), &((*scm).cmobile), &((*scm).cmobile_map), (*sc).top.v.len);
-  //  printf("Test: %d %d\n", (*scm).top.top.top.v.len, (*scm).cmobile.len);
-  // RESUME: fix memory error in contract_elbows
-  contract_leaves(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  //printf("Contracting elbows\n");
-  contract_elbows(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_leaves(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_elbows(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
   unfix_point_string_config(sc, ext_f_site);
   int c_ef = (*scm).top.map.e[ext_f_site];
   (*scm).cmobile_map.e[c_ef] = (*scm).cmobile.len;
   add2array_int(&((*scm).cmobile), c_ef);
-  //  printf("test 2: %d\n", (*scm).cmobile.len);
   array_int_init(&((*scm).c_map), (*scm).cmobile.len);
   (*scm).c_map.len = (*scm).cmobile.len;
   heuristic_pars *hpars = (heuristic_pars *) malloc(sizeof(heuristic_pars));
@@ -1350,9 +1367,9 @@ void sc_minimizer_mm_init_heuristic(sc_minimizer_mm *scm, string_config *sc, int
     (*scm).c_data = gsl_vector_alloc(n_vars);
     //(*scm).tol = stepsize;
     //printf("Setting solver_data\n");
-    (*scm).solver_data.f = const_L_heuristic;
-    (*scm).solver_data.df = const_L_heuristic_df;
-    (*scm).solver_data.fdf = const_L_heuristic_fdf;
+    (*scm).solver_data.f = heuristic_f;
+    (*scm).solver_data.df = heuristic_df;
+    (*scm).solver_data.fdf = heuristic_fdf;
     (*scm).solver_data.params = (*scm).pars;
     (*scm).solver_data.n = n_vars;
     //printf("\tReading mobile coordinates\n");
@@ -1421,32 +1438,9 @@ int sc_minimizer_mm_heuristic_update_L0_cmobile(sc_minimizer_mm *scm, heuristic_
   return -1;
 }
 
-//const double k = 1.0;
-
 double rnd()
 {
   return ((double) rand()) / RAND_MAX;
-}
-
-double const_L_target_func3(const gsl_vector *c_data, void *pars)
-{
-  const_L_target_func_pars *cltf_pars = (const_L_target_func_pars *) pars;
-
-  double L = total_length_func_exp(c_data, (*cltf_pars).sc, (*cltf_pars).c_map, (*cltf_pars).top, (*cltf_pars).cmobile, (*cltf_pars).cmobile_map, 1e-32);
-  if ((*cltf_pars).L0 > L) {}
-  else return L * sqrt(euclid_normsq(&((*cltf_pars).ext_f[0]), (*(*cltf_pars).sc).dim)) * 10;
-  double dp = 0;
-  int mi;
-  if ((*cltf_pars).top != NULL) mi = (*(*cltf_pars).cmobile_map).e[(*(*cltf_pars).top).map.e[(*cltf_pars).ext_f_site]];
-  else mi = (*(*cltf_pars).sc).fm_addr.e[(*cltf_pars).ext_f_site];
-  const double *x_ef = gsl_vector_const_ptr(c_data, (*(*cltf_pars).c_map).e[mi]);
-  for (int di = 0; di < (*(*cltf_pars).sc).dim; di++)
-    {
-      dp += x_ef[di] * (*cltf_pars).ext_f[di];
-    }
-  //printf("(done)\n");
-  dp = -dp; // Consider removing the 0.01 * L term
-  return dp;
 }
 
 double sc_solver_distsq_exp(string_config *sc, contr_nbrlist *top0, array_int *cmobile0, array_int *cmobile_map0, array_int *c_map0, const gsl_vector *x0, contr_nbrlist *top1, array_int *cmobile1, array_int *cmobile_map1, array_int *c_map1, const gsl_vector *x1)
@@ -1480,16 +1474,15 @@ double sc_solver_distsq_exp(string_config *sc, contr_nbrlist *top0, array_int *c
 
 void read_mobile_coords_string_config(string_config *sc, contr_nbrlist *top, array_int *cmobile, gsl_vector *c_data, array_int *c_map)
 {
+  add_mem_array_int_until(c_map, (*cmobile).len);
+  (*c_map).len = (*cmobile).len;
   if (top != NULL && cmobile != NULL)
     {      
-      //printf("Reading coordinates into contracted graph (cmobile.len = %d)\n", (*cmobile).len);
       int base = 0;
       for (int mi = 0; mi < (*cmobile).len; mi++)
 	{
 	  int ci = (*cmobile).e[mi];
-	  //printf("cluster: %d (%d)\n", ci, (*top).top.top.v.len);
 	  int i = (*top).fibers.e[ci].e[0];
-	  //printf("Reading coordinates of %d (%d) into [%d,%d]\n", i, ci, base, base + (*sc).dim);
 	  double *cdi = gsl_vector_ptr(c_data, base);
 	  double *xi = string_config_vertex_coords(sc, i);
 	  for (int di = 0; di < (*sc).dim; di++)
@@ -1519,159 +1512,393 @@ void read_mobile_coords_string_config(string_config *sc, contr_nbrlist *top, arr
     }  
 }
 
-void total_length_func_pars_init(total_length_func_pars *tlf_pars, string_config *sc, array_int *c_map, double epsilon)
+void sc_minimizer_sd_total_length_pars(sc_minimizer_sd *scm, total_length_pars *tlf_pars)
 {
-  (*tlf_pars).core_radsq = epsilon * epsilon / (*sc).dim;
-  (*tlf_pars).sc = sc;
-  (*tlf_pars).c_map = c_map;
-  (*tlf_pars).top = NULL;
-  (*tlf_pars).cmobile = NULL;
-  (*tlf_pars).cmobile_map = NULL;
+  total_length_pars_init(tlf_pars, (*scm).sc, &((*scm).c_map), &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map));
+}
+
+void sc_minimizer_sd_heuristic_pars(sc_minimizer_sd *scm, heuristic_pars *hpars, int ext_f_site, double *ext_f, double L0, double k)
+{
+  heuristic_pars_init(hpars, (*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), ext_f_site, ext_f, L0, k);
 }
 
 // The idea is to use the steepest descent solver to test the stability
 //  of clusters (until I can implement the 'Poisson' appproach.)
 void sc_minimizer_sd_init(sc_minimizer_sd *scm, string_config *sc)
 {
+  (*scm).set_flag = 0;
   (*scm).sc = sc;
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) malloc(sizeof(total_length_func_pars));
-  (*scm).pars = tlf_pars;
-  (*tlf_pars).sc = sc;
-  (*tlf_pars).top = &((*scm).top);
-  (*tlf_pars).cmobile = &((*scm).cmobile);
-  (*tlf_pars).cmobile_map = &((*scm).cmobile_map);
-  (*tlf_pars).c_map = &((*scm).c_map);
-  (*tlf_pars).core_radsq = 1e-16;
   contr_nbrlist_init(&((*scm).top), &((*sc).top), &((*sc).edge_wts));
   prep_contr_list(&((*sc).mobile), &((*scm).cmobile), &((*scm).cmobile_map), (*sc).top.v.len);
-  contract_leaves(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  contract_elbows(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_leaves(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  check_consistency_ctop(sc, &((*scm).top));
+  contract_elbows(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  check_consistency_ctop(sc, &((*scm).top));
   array_int_init(&((*scm).c_map), (*scm).cmobile.len);
   (*scm).c_map.len = (*scm).cmobile.len;
   int n_vars = (*scm).cmobile.len * (*sc).dim;
   (*scm).n_vars = n_vars;
   (*scm).c_data = gsl_vector_alloc(n_vars);
-  (*scm).fdata = gsl_vector_alloc(n_vars);
-  read_mobile_coords_string_config(sc, &((*scm).top), &((*scm).cmobile), (*scm).c_data, &((*scm).c_map));  
+  (*scm).f_data = gsl_vector_alloc(n_vars);
+  read_mobile_coords_string_config(sc, &((*scm).top), &((*scm).cmobile), (*scm).c_data, &((*scm).c_map));
+}
+
+void sc_minimizer_sd_init_exp(sc_minimizer_sd *scm, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, const gsl_vector *x)
+{
+  (*scm).set_flag = 0;
+  transcribe_contr_nbrlist(top, &((*scm).top));
+  (*scm).sc = sc;
+  transcribe_array_int(cmobile, &((*scm).cmobile));
+  transcribe_array_int(cmobile_map, &((*scm).cmobile_map));
+  transcribe_array_int(c_map, &((*scm).c_map));
+  int n_vars = (*x).size;
+  (*scm).n_vars = n_vars;
+  (*scm).c_data = gsl_vector_alloc(n_vars);
+  (*scm).f_data = gsl_vector_alloc(n_vars);
+  gsl_vector_memcpy((*scm).c_data, x);
 }
 
 void free_sc_minimizer_sd(sc_minimizer_sd *scm)
 {
-  free((*scm).pars);
   free_array_int(&((*scm).c_map));
   gsl_vector_free((*scm).c_data);
-  gsl_vector_free((*scm).fdata);
+  gsl_vector_free((*scm).f_data);
   free_array_int(&((*scm).cmobile));
   free_array_int(&((*scm).cmobile_map));
   free_contr_nbrlist(&((*scm).top));
 }
 
-void sc_minimizer_sd_iterate(sc_minimizer_sd *scm, double dt)
+void sc_minimizer_sd_set(sc_minimizer_sd *scm, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars, const gsl_vector *x)
 {
-  sc_minimizer_sd_counter += 1;
-  grad_total_length_func((*scm).c_data, (*scm).pars, (*scm).fdata);
-  double *x = gsl_vector_ptr((*scm).c_data, 0);
-  double *f = gsl_vector_ptr((*scm).fdata, 0);
-  for (int i = 0; i < (*scm).c_data->size; i++)
+  vf(x, pars, (*scm).f_data);
+  if (x != (*scm).c_data)
     {
-      x[i] -= f[i] * dt;
+      gsl_vector_memcpy((*scm).c_data, x);
     }
+  (*scm).set_flag = 1;
 }
 
-void sc_minimizer_sd_check_merging(sc_minimizer_sd *scm, double rad)
+double sc_minimizer_sd_iterate(sc_minimizer_sd *scm, double dt, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars, double prec)
 {
-  // NOTE: in general, this may require re-initializing (or 'resetting') a gsl_solver instance as well
+  if (dt > 0) {}
+  else dt = prec;
+  if ((*scm).c_data->size > 0) {}
+  else return 0;
+  if ((*scm).set_flag) {}
+  else
+    {
+      sc_minimizer_sd_set(scm, vf, pars, (*scm).c_data);
+    }
+  vf((*scm).c_data, pars, (*scm).f_data);
+  double fnorm = gsl_blas_dnrm2((*scm).f_data);
+  if (fnorm < prec) return 0; // Consider including two precisions: one for the line search, another for the total force.
+  sc_minimizer_sd_counter += 1;
+  double *x = gsl_vector_ptr((*scm).c_data, 0);
+  gsl_vector *aux_data = gsl_vector_alloc((*scm).c_data->size);
+  gsl_vector *aux_f_data = gsl_vector_alloc((*scm).c_data->size);
+  //  gsl_vector *n_vec = gsl_vector_alloc((*scm).c_data->size);
+  //gsl_vector_memcpy(n_vec, (*scm).f_data);
+  fnorm = 1. / fnorm;
+  gsl_vector_scale((*scm).f_data, fnorm);
+  double *xt = gsl_vector_ptr(aux_data, 0);
+  double *f = gsl_vector_ptr((*scm).f_data, 0);
+  double t = dt;
+  while (1)
+    {
+      for (int i = 0; i < (*scm).c_data->size; i++)
+	{
+	  xt[i] = x[i] - t * f[i];
+	}
+      vf(aux_data, pars, aux_f_data);
+      double dp;
+      gsl_blas_ddot(aux_f_data, (*scm).f_data, &dp);
+      if (dp <= 0) break;
+      t *= 2;
+    }
+  double t_ = 0;
+  double tol = 0.5 * prec;
+  //printf("tol = %g\n", tol);
+  while (1)
+    {
+      double t_mid = 0.5 * (t + t_);
+      for (int i = 0; i < (*scm).c_data->size; i++) xt[i] = x[i] - t_mid * f[i];
+      vf(aux_data, pars, aux_f_data);
+      double dp;
+      gsl_blas_ddot(aux_f_data, (*scm).f_data, &dp);
+      if (dp > 0) t_ = t_mid;
+      else t = t_mid;
+      if ((t - t_) < tol) break;
+    }
+  gsl_vector_free((*scm).c_data);
+  gsl_vector_free((*scm).f_data);
+  //  gsl_vector_free(n_vec);
+  (*scm).c_data = aux_data;
+  (*scm).f_data = aux_f_data;
+  //  printf("(done: sc_minimizer_sd_iterate)\n");
+  //printf("sc_minimizer_sd_iterate: t = %g (prec = %g)\n", t, prec);
+  return t;
+}
+
+void sc_minimizer_set_clusters_exp2(string_config *sc, contr_nbrlist *aux, array_int *cmobile, array_int *cmobile_map, array_int *c_map, const gsl_vector *x, gsl_vector *f_data, double epsilon, double prec)
+{
+  double epsq = epsilon * epsilon;
+  double precsq = prec * prec;
+  int mi = 0;
+  int init_size = (*cmobile).len;
+  array_double fsq;
+  array_double_init(&fsq, (*cmobile).len);
+  for (int mi = 0; mi < (*cmobile).len; mi++)
+    {
+      double *fi = gsl_vector_ptr(f_data, (*c_map).e[mi]);
+      add2array_double(&fsq, epsq * euclid_normsq(fi, (*sc).dim));
+    }
+  while (mi < (*cmobile).len)
+    {
+      int ci = (*cmobile).e[mi];
+      const double *xi = sc_solver_vertex_coords_exp2(sc, ci, &(*aux), &(*cmobile_map), &((*c_map)), x);
+      double thrsq = fsq.e[mi];
+      int cii_ = -1;
+      for (int ni = 0; ni < (*aux).top.top.v.e[ci].len; ni++)
+	{
+	  int cii = (*aux).top.top.v.e[ci].e[ni];
+	  int mcii = (*cmobile_map).e[cii];
+	  if (mcii < mi) {}
+	  else continue;
+	  const double *xii = sc_solver_vertex_coords_exp2(sc, cii, &(*aux), &(*cmobile_map), &((*c_map)), x);
+	  double delsq = 0;
+	  for (int di = 0; di < (*sc).dim; di++)
+	    {
+	      double delx = xi[di] - xii[di];
+	      delsq += delx * delx;
+	    }
+	  double aux_thrsq = mcii == -1 || fsq.e[mcii] < fsq.e[mi] ? thrsq : fsq.e[mcii];
+	  aux_thrsq = aux_thrsq > precsq ? aux_thrsq : precsq;
+	  if (delsq > aux_thrsq) {}
+	  else
+	    {
+	      cii_ = cii;
+	      break;
+	    }
+	}
+      if (cii_ > -1)
+	{
+	  contr_nbrlist_merge_cluster(aux, ci, cii_);
+	  remove_embedding(cmobile, cmobile_map, mi);
+	  remove_array_int(c_map, mi);
+	  remove_array_double(&fsq, mi);
+	}
+      else mi += 1;
+    }
+  free_array_double(&fsq);
+}
+
+// RESUME: change references to this function! 
+void sc_minimizer_sd_check_merging(sc_minimizer_sd *scm, double ratio, double prec)
+{
   string_config *sc = (*scm).sc;
   contr_nbrlist *top = &((*scm).top);
   array_int *cmobile_map = &((*scm).cmobile_map);
   array_int *cmobile = &((*scm).cmobile);
   array_int *c_map = &((*scm).c_map);
   gsl_vector *c_data = (*scm).c_data;
-  gsl_vector *fdata = (*scm).fdata;
-  // void sc_minimizer_set_clusters_exp(string_config *sc, contr_nbrlist *aux, array_int *cmobile, array_int *cmobile_map, array_int *c_map, const gsl_vector *x, double epsilon) // RESUME: fix this!
+  gsl_vector *f_data = (*scm).f_data;
   int nc0 = (*top).top.top.v.len;
-  sc_minimizer_set_clusters_exp(sc, top, cmobile, cmobile_map, c_map, c_data, rad);
+  sc_minimizer_set_clusters_exp2(sc, top, cmobile, cmobile_map, c_map, c_data, f_data, ratio, prec);
   int nc1 = (*top).top.top.v.len;
   if (nc0 != nc1)
     {
+      //      printf("Merging clusters found! (%d -> %d)\n", nc0 - (*sc).fxd.len, (*cmobile).len);
       // Reallocate coordinate and force data
       int n_vars = (*cmobile).len * (*sc).dim;
       gsl_vector *nc_data = gsl_vector_alloc(n_vars);
-      gsl_vector *nfdata = gsl_vector_alloc(n_vars);
+      gsl_vector *nf_data = gsl_vector_alloc(n_vars);
       (*scm).n_vars = n_vars;
       int base = 0;
       for (int ci = 0; ci < (*cmobile).len; ci++)
 	{
 	  double *xi = gsl_vector_ptr(nc_data, base);
-	  double *fi = gsl_vector_ptr(nfdata, base);
 	  double *xi0 = gsl_vector_ptr(c_data, (*c_map).e[ci]);
-	  double *fi0 = gsl_vector_ptr((*scm).fdata, (*c_map).e[ci]);
-	  for (int di = 0; di < (*sc).dim; di++)
-	    {
-	      xi[di] = xi0[di];
-	      fi[di] = fi0[di];
-	    }
+	  for (int di = 0; di < (*sc).dim; di++) xi[di] = xi0[di];
+	  (*c_map).e[ci] = base;
 	  base += (*sc).dim;
 	}
-      gsl_vector_free(c_data);
-      gsl_vector_free(fdata);
+      gsl_vector_free((*scm).c_data);
+      gsl_vector_free((*scm).f_data);
       (*scm).c_data = nc_data;
-      (*scm).fdata = nfdata;
+      (*scm).f_data = nf_data;
+      (*scm).set_flag = 0;
     }
 }
 
-int sc_minimizer_sd_relax(sc_minimizer_sd *scm, double dt, double merge_radius, double prec)
+void sc_minimizer_sd_expand_clusters(sc_minimizer_sd *scm, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars, double prec)
+{
+  int n_vars = (*(*scm).sc).dim * (*(*scm).sc).mobile.len;
+  gsl_vector *nc_data = gsl_vector_alloc(n_vars);
+  sc_solver_expand((*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data, nc_data);
+  gsl_vector_free((*scm).c_data);
+  (*scm).c_data = nc_data;
+  gsl_vector_free((*scm).f_data);
+  (*scm).f_data = gsl_vector_alloc(n_vars);
+  //  (*scm).set_flag = 0;
+  sc_minimizer_sd_set(scm, vf, pars, (*scm).c_data);
+  // NOTE: it may be slightly faster to move this step to 'sc_solver_expand'
+  double *x_ = gsl_vector_ptr((*scm).c_data, 0);
+  double *f_ = gsl_vector_ptr((*scm).f_data, 0);
+  prec *= 0.5;
+  for (int i = 0; i < (*scm).c_data->size; i++)
+    {
+      x_[i] += f_[i] * prec;
+    }
+  sc_minimizer_sd_set(scm, vf, pars, (*scm).c_data);  
+}
+
+int sc_minimizer_sd_test_clusters(sc_minimizer_sd *scm, double *dt, int N_steps, double prec, double merge_ratio, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars)
+{
+  double frc = gsl_blas_dnrm2((*scm).f_data);
+  if (N_steps > 64)
+    {
+        printf("sc_minimizer_sd_test_clusters: dt = %g, precision = %g, minsep = %g, force = %g, N_steps = %d\n", (*dt), prec, sc_minimizer_shortest_dist((*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data), frc, N_steps);
+    }
+  //  printf("prop_rad = %g\n", prop_rad);
+  sc_minimizer_sd_expand_clusters(scm, vf, pars, prec);
+  for (int i = 0; i < N_steps; i++)
+    {
+      double dt_ = sc_minimizer_sd_iterate(scm, (*dt), vf, pars, 0.5 * prec);
+      sc_minimizer_sd_check_merging(scm, merge_ratio, prec);
+      (*dt) = dt_;
+    }
+  if ((*scm).set_flag == 0) sc_minimizer_sd_set(scm, vf, pars, (*scm).c_data);
+}
+
+int sc_minimizer_sd_relax(sc_minimizer_sd *scm, double *dt, double merge_ratio, double prec, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars)
+{
+  if ((*scm).c_data->size > 0) {}
+  else return 1;
+  string_config *sc = (*scm).sc;
+  int count = 0;
+  double h_prec = 0.25 * prec;
+  double tolsq = prec * prec;
+  while (count < MAX_ITER_SD)
+    {
+      (*dt) = sc_minimizer_sd_iterate(scm, (*dt), vf, pars, prec);
+      double min_sep = sc_minimizer_shortest_dist((*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      //      printf("Iteration %d: dt = %g (%g), min_sep = %g, norm_f = %g, total_length_df_counter = %d\n", count, (*dt), prec, min_sep, gsl_blas_dnrm2((*scm).f_data), get_total_length_df_counter());
+      // Check for merging vertices
+      sc_minimizer_sd_check_merging(scm, merge_ratio, prec);
+      sc_minimizer_sd_set(scm, vf, pars, (*scm).c_data);
+      double errsq;
+      gsl_blas_ddot((*scm).f_data, (*scm).f_data, &errsq);
+      if (errsq < tolsq) break;
+      count += 1;
+    }
+  //printf("sc_minimizer_sd_relax: count = %d, total_length_df_counter = %d\n", count, get_total_length_df_counter());
+  return count < MAX_ITER_SD;
+}
+
+void sc_minimizer_sd_solve(sc_minimizer_sd *scm, double *dt, double merge_ratio, double prec, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars)
 {
   string_config *sc = (*scm).sc;
-  double r = 0.5;
-  int prec_lim = log(prec / dt) / log(r) + 1;
+  double tolsq = prec * prec;
+  gsl_vector *x0 = gsl_vector_alloc((*scm).c_data->size);
+  gsl_vector_memcpy(x0, (*scm).c_data);
+  contr_nbrlist top0;
+  transcribe_contr_nbrlist(&((*scm).top), &top0);
+  array_int cmobile0;
+  transcribe_array_int(&((*scm).cmobile), &cmobile0);
+  array_int cmobile_map0;
+  transcribe_array_int(&((*scm).cmobile_map), &cmobile_map0);
+  array_int c_map0;
+  transcribe_array_int(&((*scm).c_map), &c_map0);
   int count = 0;
-  double timer_ = 0;
-  double timer_lim = 5 * dt;
-  int timer_counter = 0;
-  double L_ref = total_length_func((*scm).c_data, (*scm).pars);
-  gsl_vector *ave_pos = gsl_vector_alloc((*scm).n_vars);
-  gsl_vector_set_zero(ave_pos);
-  double *ave_pos_ = gsl_vector_ptr(ave_pos, 0);
-  while (count < 10000000)
+  double h_prec = 0.5 * prec;
+  while (count < MAX_ITER)
     {
-      sc_minimizer_sd_iterate(scm, dt);
-      timer_counter += 1;
-      for (int ci = 0; ci < (*scm).n_vars; ci++)
+      printf("dt = %g\n", *dt);
+      int status = sc_minimizer_sd_relax(scm, dt, merge_ratio, h_prec, vf, pars);
+      double dxsq = sc_solver_distsq_exp((*scm).sc, &(top0), &(cmobile0), &(cmobile_map0), &(c_map0), x0, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      double normsq_df;
+      gsl_blas_ddot((*scm).f_data, (*scm).f_data, &normsq_df);
+      double min_sep_dist = sc_minimizer_shortest_dist(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      printf("dxsq = %g, norm_dfsq = %g dt = %g (tolsq = %g) min_sep = %g, total_length_df_counter = %d\n", dxsq, normsq_df, *dt, tolsq, min_sep_dist, get_total_length_df_counter());
+      if ((dxsq + normsq_df) < tolsq)
 	{
-	  ave_pos_[ci] += gsl_vector_get((*scm).c_data, ci) * dt;
+	  break;
 	}
-      timer_ += dt;
-      if (timer_ > timer_lim)
+      gsl_vector_free(x0);
+      x0 = gsl_vector_alloc((*scm).c_data->size);
+      gsl_vector_memcpy(x0, (*scm).c_data);
+      free_contr_nbrlist(&top0);
+      transcribe_contr_nbrlist(&((*scm).top), &top0);
+      free_array_int(&cmobile0);
+      transcribe_array_int(&((*scm).cmobile), &cmobile0);
+      free_array_int(&cmobile_map0);
+      transcribe_array_int(&((*scm).cmobile_map), &cmobile_map0);
+      free_array_int(&c_map0);
+      transcribe_array_int(&((*scm).c_map), &c_map0);
+      sc_minimizer_sd_expand_clusters(scm, vf, pars, prec);
+      count += 1;
+    }
+  free_array_int(&c_map0);
+  free_array_int(&cmobile0);
+  free_array_int(&cmobile_map0);
+  free_contr_nbrlist(&top0);
+  gsl_vector_free(x0);
+  if (count < MAX_ITER)
+    {
+      //printf("success! Residual = %g (count = %d, total_length_df_count = %d)\n", gsl_blas_dnrm2((*scm).f_data), count, get_total_length_df_counter());
+    }
+  else
+    {
+      printf("Residual: %g\n", gsl_blas_dnrm2((*scm).f_data));
+    }
+}
+
+int sc_minimizer_sd_relax2next_cluster(sc_minimizer_sd *scm, double *dt, double merge_ratio, double prec, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars)
+{
+  if ((*scm).c_data->size > 0) {}
+  else return GSL_SUCCESS;
+  string_config *sc = (*scm).sc;
+  int count = 0;
+  double h_prec = 0.25 * prec;
+  double tolsq = prec * prec;
+  int init_len = (*scm).cmobile.len;
+  int rstat = GSL_EMAXITER;
+  while (count < MAX_ITER_SD)
+    {
+      (*dt) = sc_minimizer_sd_iterate(scm, (*dt), vf, pars, prec);
+      double min_sep = sc_minimizer_shortest_dist((*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      //printf("Iteration %d: dt = %g (%g), min_sep = %g, norm_f = %g, total_length_df_counter = %d\n", count, (*dt), prec, min_sep, gsl_blas_dnrm2((*scm).f_data), get_total_length_df_counter());
+      // Check for merging vertices
+      sc_minimizer_sd_check_merging(scm, merge_ratio, prec);
+      sc_minimizer_sd_set(scm, vf, pars, (*scm).c_data);
+      double errsq;
+      gsl_blas_ddot((*scm).f_data, (*scm).f_data, &errsq);
+      if ((*scm).cmobile.len != init_len)
 	{
-	  double inv_time = 1. / timer_;
-	  printf("inv_time = %g: ave_pos = ", inv_time);
-	  for (int ci = 0; ci < (*scm).n_vars; ci++)
-	    {
-	      ave_pos_[ci] *= inv_time;
-	      printf("%g ", ave_pos_[ci]);
-	    }
-	  printf("\n");
-	  gsl_vector_memcpy((*scm).c_data, ave_pos);
-	  printf("Evaluating rate of progress (count = %d)\n", count);
-	  
-	  
-	  gsl_vector_set_zero(ave_pos);
-	  timer_ = 0;
+	  rstat = GSL_CONTINUE;
+	  break;
+	}
+      if (errsq < tolsq)
+	{
+	  rstat = GSL_SUCCESS;
+	  break;
 	}
       count += 1;
     }
-  gsl_vector_free(ave_pos);
-  return 1;
+  //  printf("sc_minimizer_sd_relax2next_cluster: count = %d, total_length_df_counter = %d\n", count, get_total_length_df_counter());
+  return rstat;
 }
 
-void sc_minimizer_sd_relax_diag(sc_minimizer_sd *scm, double dt, double merge_radius, int N_steps, FILE *ofile)
+void sc_minimizer_sd_relax_diag(sc_minimizer_sd *scm, double dt, int N_steps, FILE *ofile, void (*vf)(const gsl_vector *, void *, gsl_vector *), void *pars)
 {
+  double prec = dt;
+  reset_total_length_df_counter();
+  reset_sc_minimizer_sd_counter();
   for (int i = 0; i < N_steps; i++)
     {
-      sc_minimizer_sd_iterate(scm, dt);
-      sc_minimizer_sd_check_merging(scm, merge_radius);
+      dt = sc_minimizer_sd_iterate(scm, prec, vf, pars, 1e-10);
       double *x = gsl_vector_ptr((*scm).c_data, 0);
+      double *f = gsl_vector_ptr((*scm).f_data, 0);
       fprintf(ofile, "%d ", (*scm).cmobile.len);
       for (int mi = 0; mi < (*(*scm).sc).mobile.len; mi++)
 	{
@@ -1687,40 +1914,230 @@ void sc_minimizer_sd_relax_diag(sc_minimizer_sd *scm, double dt, double merge_ra
 	    }
 	  fprintf(ofile, "\t");
 	}
-      //for (int ci = 0; ci < (*scm).c_data->size; ci++) fprintf(ofile, "%g ", x[ci]);
-      double length = total_length_func((*scm).c_data, (*scm).pars);
-      fprintf(ofile, "%g\n", length);
+      double zero_vec[(*(*scm).sc).dim];
+      for (int di = 0; di < (*(*scm).sc).dim; di++) zero_vec[di] = 0;
+      for (int mi = 0; mi < (*(*scm).sc).mobile.len; mi++)
+	{
+	  int i = (*(*scm).sc).mobile.e[mi];
+	  int ci  = (*scm).top.map.e[i];
+	  int mci = (*scm).cmobile_map.e[ci];
+	  double *f_i;
+	  if (mci > -1) f_i = &(f[(*scm).c_map.e[mci]]);
+	  else f_i = &zero_vec[0];
+	  for (int di = 0; di < (*scm).sc->dim; di++)
+	    {
+	      fprintf(ofile, "%g ", f_i[di]);
+	    }
+	  fprintf(ofile, "\t");
+	}
+      double norm_g = gsl_blas_dnrm2((*scm).f_data);
+      fprintf(ofile, "%g %g %g %g %d %d %d\n", norm_g, sc_minimizer_shortest_dist((*scm).sc, &(*scm).top, &(*scm).cmobile, &(*scm).cmobile_map, &(*scm).c_map, (*scm).c_data), total_length_f((*scm).c_data, pars), dt, total_length_f_counter, total_length_df_counter, total_length_fdf_counter);
     }
 }
 
-int sc_minimizer_nm_relax(sc_minimizer_nm *scm, double tol)
+int sc_minimizer_sd_relax_fin(sc_minimizer_sd *scm, total_length_pars *tlf_pars, double dt, double merge_ratio, double prec)
 {
+  string_config *sc = (*scm).sc;
+  int status = GSL_CONTINUE;
   int count = 0;
-  double merge_rad = 5 * tol;
-  while (count < MAX_ITER_NM)
+  while (count < MAX_ITER)
     {
       count += 1;
-      int status;
-      for (int i = 0; i < 5; i++) status = sc_minimizer_nm_iterate(scm);
-      // Check if vertices need to be merged
-      int n_vs0 = (*scm).n_vars;
-      if (status == GSL_SUCCESS) sc_minimizer_nm_check_merging(scm, merge_rad);
-      else
+      if ((*scm).cmobile.len > 0)
 	{
-	  printf("Iteration status = %d. Checking for merging vertices with default merge radius (1e-4)\n", status);
-	  sc_minimizer_nm_check_merging(scm, 1e-4); // RESUME: update this (use geometry of configuration to define the merge radius)
-	}
-      if (n_vs0 == (*scm).n_vars)
-	{
+	  sc_minimizer_fin scf;
+	  sc_minimizer_fin_init_exp(&scf, (*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+	  double L_init = total_length_f((*scm).c_data, tlf_pars);
+	  status = sc_minimizer_fin_relax(&scf, prec);
 	  if (status == GSL_SUCCESS)
 	    {
-	      double size = gsl_multimin_fminimizer_size((*scm).solver);
-	      status = gsl_multimin_test_size(size, tol);
-	      if (status == GSL_CONTINUE) {}
-	      else return status;
+	      gsl_vector_memcpy((*scm).c_data, scf.solver->x);
+	      sc_minimizer_sd_set(scm, total_length_df, tlf_pars, (*scm).c_data);
+	      free_sc_minimizer_fin(&scf);
+	      return status;
 	    }
-	  else return status;
+	  else
+	    {
+	      double L_fin = total_length_f(scf.solver->x, tlf_pars);
+	      if (L_fin < L_init)
+		{
+		  gsl_vector_memcpy((*scm).c_data, scf.solver->x);
+		  sc_minimizer_sd_set(scm, total_length_df, tlf_pars, (*scm).c_data);
+		}
+	      free_sc_minimizer_fin(&scf);
+	    }
 	}
+      status = sc_minimizer_sd_relax2next_cluster(scm, &dt, merge_ratio, prec, total_length_df, tlf_pars);
+      if (status == GSL_SUCCESS || status == GSL_EMAXITER) return status;
+    }
+  return status;
+}
+
+int sc_minimizer_sd_solve_fin(sc_minimizer_sd *scm, total_length_pars *aux, double dt, double merge_ratio, double prec)
+{
+  string_config *sc = (*scm).sc;
+  total_length_pars tlf_pars;
+  if (aux != NULL) tlf_pars = (*aux);
+  else
+    {
+      sc_minimizer_sd_total_length_pars(scm, &tlf_pars);
+    }
+  gsl_vector *x0 = gsl_vector_alloc((*scm).c_data->size);
+  gsl_vector_memcpy(x0, (*scm).c_data);
+  contr_nbrlist top0;
+  transcribe_contr_nbrlist(&((*scm).top), &top0);
+  array_int cmobile0;
+  transcribe_array_int(&((*scm).cmobile), &cmobile0);
+  array_int cmobile_map0;
+  transcribe_array_int(&((*scm).cmobile_map), &cmobile_map0);
+  array_int c_map0;
+  transcribe_array_int(&((*scm).c_map), &c_map0);
+  int count = 0;
+  double h_prec = 0.5 * prec;
+  double tolsq = prec * prec;
+  while (count < MAX_ITER)
+    {
+      sc_minimizer_sd_expand_clusters(scm, total_length_df, &tlf_pars, prec);
+      int status = sc_minimizer_sd_relax_fin(scm, &tlf_pars, dt, merge_ratio, h_prec);
+      if (status == GSL_SUCCESS) {}
+      else
+	{
+	  printf("status = %d after %d iterations. norm = %g, min_sep = %g\n", status, count, gsl_blas_dnrm2((*scm).f_data), sc_minimizer_shortest_dist_mobile(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data));
+	}
+      double dxsq = sc_solver_distsq_exp((*scm).sc, &(top0), &(cmobile0), &(cmobile_map0), &(c_map0), x0, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      double normsq_df;
+      gsl_blas_ddot((*scm).f_data, (*scm).f_data, &normsq_df);
+      double min_sep_dist = sc_minimizer_shortest_dist(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      //     printf("%d: dxsq = %g, norm_dfsq = %g (tolsq = %g) min_sep = %g, total_length_df_counter = %d\n", count, dxsq, normsq_df, tolsq, min_sep_dist, get_total_length_df_counter());
+      if ((dxsq + normsq_df) < tolsq)
+	{
+	  break;
+	}
+      gsl_vector_free(x0);
+      x0 = gsl_vector_alloc((*scm).c_data->size);
+      gsl_vector_memcpy(x0, (*scm).c_data);
+      free_contr_nbrlist(&top0);
+      transcribe_contr_nbrlist(&((*scm).top), &top0);
+      free_array_int(&cmobile0);
+      transcribe_array_int(&((*scm).cmobile), &cmobile0);
+      free_array_int(&cmobile_map0);
+      transcribe_array_int(&((*scm).cmobile_map), &cmobile_map0);
+      free_array_int(&c_map0);
+      transcribe_array_int(&((*scm).c_map), &c_map0);
+      count += 1;
+    }
+  free_array_int(&c_map0);
+  free_array_int(&cmobile0);
+  free_array_int(&cmobile_map0);
+  free_contr_nbrlist(&top0);
+  gsl_vector_free(x0);
+  if (count < MAX_ITER)
+    {
+      return GSL_SUCCESS;
+    }
+  else
+    {
+      return GSL_CONTINUE;
+    }
+}
+
+int sc_minimizer_sd_relax_hfin(sc_minimizer_sd *scm, heuristic_pars *h_pars, double dt, double merge_ratio, double prec)
+{
+  string_config *sc = (*scm).sc;
+  int status = GSL_CONTINUE;
+  int count = 0;
+  while (count < MAX_ITER)
+    {
+      count += 1;
+      if ((*scm).cmobile.len > 0)
+	{
+	  sc_minimizer_hfin scf;
+	  sc_minimizer_hfin_init_exp(&scf, (*scm).sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data, (*h_pars).ext_f_site, (*h_pars).ext_f, (*h_pars).L0, (*h_pars).k);
+	  double H_init = heuristic_f((*scm).c_data, h_pars);
+	  status = sc_minimizer_hfin_relax(&scf, prec);
+	  if (status == GSL_SUCCESS)
+	    {
+	      gsl_vector_memcpy((*scm).c_data, scf.solver->x);
+	      sc_minimizer_sd_set(scm, heuristic_df, h_pars, (*scm).c_data);
+	      free_sc_minimizer_hfin(&scf);
+	      return status;
+	    }
+	  else
+	    {
+	      double H_fin = heuristic_f(scf.solver->x, h_pars);
+	      if (H_fin < H_init)
+		{
+		  gsl_vector_memcpy((*scm).c_data, scf.solver->x);
+		  sc_minimizer_sd_set(scm, heuristic_df, h_pars, (*scm).c_data);
+		}
+	      free_sc_minimizer_hfin(&scf);
+	    }
+	}
+      status = sc_minimizer_sd_relax2next_cluster(scm, &dt, merge_ratio, prec, heuristic_df, h_pars);
+      if (status == GSL_SUCCESS || status == GSL_EMAXITER) return status;
+    }
+  return status;
+}
+
+int sc_minimizer_sd_solve_hfin(sc_minimizer_sd *scm, heuristic_pars *h_pars, double dt, double merge_ratio, double prec)
+{
+  string_config *sc = (*scm).sc;
+  gsl_vector *x0 = gsl_vector_alloc((*scm).c_data->size);
+  gsl_vector_memcpy(x0, (*scm).c_data);
+  contr_nbrlist top0;
+  transcribe_contr_nbrlist(&((*scm).top), &top0);
+  array_int cmobile0;
+  transcribe_array_int(&((*scm).cmobile), &cmobile0);
+  array_int cmobile_map0;
+  transcribe_array_int(&((*scm).cmobile_map), &cmobile_map0);
+  array_int c_map0;
+  transcribe_array_int(&((*scm).c_map), &c_map0);
+  int count = 0;
+  double h_prec = 0.5 * prec;
+  double tolsq = prec * prec;
+  while (count < MAX_ITER)
+    {
+      sc_minimizer_sd_expand_clusters(scm, heuristic_df, h_pars, prec);
+      int status = sc_minimizer_sd_relax_hfin(scm, h_pars, dt, merge_ratio, h_prec);
+      if (status == GSL_SUCCESS) {}
+      else
+	{
+	  printf("status = %d after %d iterations. norm = %g, min_sep = %g\n", status, count, gsl_blas_dnrm2((*scm).f_data), sc_minimizer_shortest_dist_mobile(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data));
+	}
+      double dxsq = sc_solver_distsq_exp((*scm).sc, &(top0), &(cmobile0), &(cmobile_map0), &(c_map0), x0, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      double normsq_df;
+      gsl_blas_ddot((*scm).f_data, (*scm).f_data, &normsq_df);
+      double min_sep_dist = sc_minimizer_shortest_dist(sc, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
+      //      printf("relax_hfin: iter = %d, dxsq = %g, norm_dfsq = %g (tolsq = %g) min_sep = %g, total_length_df_counter = %d\n", count, dxsq, normsq_df, tolsq, min_sep_dist, get_total_length_df_counter());
+      if ((dxsq + normsq_df) < tolsq)
+	{
+	  break;
+	}
+      gsl_vector_free(x0);
+      x0 = gsl_vector_alloc((*scm).c_data->size);
+      gsl_vector_memcpy(x0, (*scm).c_data);
+      free_contr_nbrlist(&top0);
+      transcribe_contr_nbrlist(&((*scm).top), &top0);
+      free_array_int(&cmobile0);
+      transcribe_array_int(&((*scm).cmobile), &cmobile0);
+      free_array_int(&cmobile_map0);
+      transcribe_array_int(&((*scm).cmobile_map), &cmobile_map0);
+      free_array_int(&c_map0);
+      transcribe_array_int(&((*scm).c_map), &c_map0);
+      count += 1;
+    }
+  free_array_int(&c_map0);
+  free_array_int(&cmobile0);
+  free_array_int(&cmobile_map0);
+  free_contr_nbrlist(&top0);
+  gsl_vector_free(x0);
+  if (count < MAX_ITER)
+    {
+      return GSL_SUCCESS;
+    }
+  else
+    {
+      return GSL_CONTINUE;
     }
 }
 
@@ -1728,11 +2145,6 @@ int sc_minimizer_nm_relax(sc_minimizer_nm *scm, double tol)
 int scm_mm_relax_util(void *scm, double tol)
 {
   return sc_minimizer_mm_relax((sc_minimizer_mm *) scm, tol);
-}
-
-int scm_nm_relax_util(void *scm, double tol)
-{
-  return sc_minimizer_nm_relax((sc_minimizer_nm *) scm, tol);
 }
 
 int scm_rf_relax_util(void *scm, double tol)
@@ -1747,286 +2159,6 @@ int sc_minimizer_solve_util(string_config *sc, contr_nbrlist *top, array_int *cm
   //         after converging to a 'current best guess'.)
 }
 
-int sc_minimizer_nm_solve(sc_minimizer_nm *scm, double tol)
-{
-  //  printf("sc_minimizer_nm_solve\n");
-  int count = 0;
-  gsl_vector *x0 = gsl_vector_alloc((*scm).n_vars);
-  gsl_vector_memcpy(x0, (*scm).solver->x);
-  contr_nbrlist t0;
-  transcribe_contr_nbrlist(&((*scm).top), &t0); 
-  array_int cm0;
-  transcribe_array_int(&((*scm).cmobile), &cm0);
-  array_int cmm0;
-  transcribe_array_int(&((*scm).cmobile_map), &cmm0);
-  array_int cmap0;
-  transcribe_array_int(&((*scm).c_map), &cmap0);
-  double tolsq = tol * tol;
-  int rstatus = GSL_CONTINUE;
-  while (count < MAX_ITER)
-    {
-      count += 1;
-      int status = sc_minimizer_nm_relax(scm, tol);
-      // RESUME: check that status is acceptable before progressing (i.e. that the 'relaxation' hasn't terminated in a failure state)
-      //double sc_solver_distsq_exp(string_config *sc, contr_nbrlist *top0, array_int *cmobile0, array_int *cmobile_map0, array_int *c_map0, const gsl_vector *x0, contr_nbrlist *top1, array_int *cmobile1, array_int *cmobile_map1, array_int *c_map1, const gsl_vector *x1)
-      char realloc_flag = 0;
-      if (contr_nbrlist_fiber_corresp(&t0, &((*scm).top), &((*(*scm).sc).mobile))) {}
-      else
-	{
-	  printf("Fibers of relaxed contracted graph differ from those of initial graph\n");
-	  status = GSL_CONTINUE;
-	  realloc_flag = 1;
-	}
-      if (realloc_flag)
-	{
-	  // NOTE: there's probably a slightly more efficient approach to this (e.g. 'aligning' contraction t0 with (*scm).top)
-	  // but this isn't (or shouldn't be) the rate-limiting step.
-	  //printf("Reallocating t0, cm0, cmm0, cmap0, etc.\n");
-	  free_contr_nbrlist(&t0);
-	  free_array_int(&cm0);
-	  free_array_int(&cmm0);
-	  free_array_int(&cmap0);
-	  gsl_vector_free(x0);
-	  transcribe_contr_nbrlist(&((*scm).top), &t0);
-	  transcribe_array_int(&((*scm).cmobile), &cm0);
-	  transcribe_array_int(&((*scm).cmobile_map), &cmm0);
-	  transcribe_array_int(&((*scm).c_map), &cmap0);
-	  x0 = gsl_vector_alloc((*scm).n_vars);
-	  //printf("(done)\n");
-	}
-      else
-	{
-	  double dispsq = sc_solver_distsq_exp((*scm).sc, &t0, &cm0, &cmm0, &cmap0, x0, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).solver->x);
-	  if (dispsq > tolsq)
-	    {
-	      status = GSL_CONTINUE;
-	    }
-	  else
-	    {
-	      rstatus = GSL_SUCCESS;
-	      break;
-	    }
-	}
-      gsl_vector_memcpy(x0, (*scm).c_data);
-      // RESET SOLVER AT CURRENT POSITION
-      sc_minimizer_nm_reset(scm);
-      
-      // Consider perturbing mobile coordinates by random vector.
-    }
-  // Free auxiliary structures
-  //printf("Freeing t0, cm0, cmm0, cmap0, x0\n");
-  free_contr_nbrlist(&t0);
-  free_array_int(&cm0);
-  free_array_int(&cmm0);
-  free_array_int(&cmap0);
-  gsl_vector_free(x0);
-  //printf("(done: sc_minimizer_nm_solve)\n");
-  return rstatus;
-}
-
-void sc_minimizer_nm_init_const_L(sc_minimizer_nm *scm, string_config *sc, double L0, int ext_f_site, double *ext_f)
-{
-  fix_point_string_config(sc, ext_f_site);
-  //printf("sc_minimizer_nm_init_const_L:\n");
-  (*scm).sc = sc;
-  const_L_target_func_pars *cltf_pars = (const_L_target_func_pars *) calloc(1, sizeof(const_L_target_func_pars));
-  (*scm).pars = cltf_pars;
-  contr_nbrlist_init(&((*scm).top), &((*sc).top), &((*sc).edge_wts));
-  transcribe_array_int(&((*sc).mobile), &((*scm).cmobile));
-  array_int_init(&((*scm).cmobile_map), (*sc).top.v.len);
-  (*scm).cmobile_map.len = (*sc).top.v.len;
-  for (int i = 0; i < (*sc).top.v.len; i++) (*scm).cmobile_map.e[i] = -1;
-  for (int mi = 0; mi < (*scm).cmobile.len; mi++) (*scm).cmobile_map.e[(*scm).cmobile.e[mi]] = mi;
-  contract_leaves(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  contract_elbows(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  unfix_point_string_config(sc, ext_f_site);
-  int c_ef = (*scm).top.map.e[ext_f_site];
-  (*scm).cmobile_map.e[c_ef] = (*scm).cmobile.len;
-  add2array_int(&((*scm).cmobile), c_ef);
-  int n_vars = (*scm).cmobile.len * (*sc).dim;
-  printf("test: %d %g %g\n", n_vars, string_config_total_length(sc), L0);
-  (*scm).n_vars = n_vars;
-  (*scm).solver = gsl_multimin_fminimizer_alloc(gsl_multimin_fminimizer_nmsimplex2, n_vars);
-  //printf("test\n");
-  (*scm).solver_data.f = const_L_target_func3;
-  (*scm).solver_data.params = (*scm).pars;
-  (*scm).solver_data.n = n_vars;
-  (*cltf_pars).sc = sc;
-  (*cltf_pars).top = &((*scm).top);
-  (*cltf_pars).cmobile = &((*scm).cmobile);
-  (*cltf_pars).cmobile_map = &((*scm).cmobile_map);
-  (*cltf_pars).c_map = &((*scm).c_map);
-  (*cltf_pars).core_radsq = 1e-32;
-  (*cltf_pars).L0 = L0;
-  (*cltf_pars).ext_f = ext_f;
-  (*cltf_pars).ext_f_site = ext_f_site;
-  (*scm).c_data = gsl_vector_alloc(n_vars);
-  array_int_init(&((*scm).c_map), (*scm).cmobile.len);
-  (*scm).c_map.len = (*scm).cmobile.len;
-  read_mobile_coords_string_config(sc, &((*scm).top), &((*scm).cmobile), (*scm).c_data, &((*scm).c_map));
-  gsl_vector *smplx = gsl_vector_alloc(n_vars);
-  double stepsize = sqrt(string_config_var_x(sc)) * 0.01;
-  gsl_vector_set_all(smplx, stepsize);
-  //printf("Setting solver\n");
-  gsl_multimin_fminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, smplx);
-  (*scm).smplx = smplx;
-  //printf("(done)\n");
-  //gsl_vector_free(smplx);
-}
-
-void sc_minimizer_nm_init(sc_minimizer_nm *scm, string_config *sc, double stepsize)
-{
-  (*scm).sc = sc;
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) malloc(sizeof(total_length_func_pars));
-  (*scm).pars = tlf_pars;
-  // Determine if the topology is contractable
-  contr_nbrlist_init(&((*scm).top), &((*sc).top), &((*sc).edge_wts));
-  transcribe_array_int(&((*sc).mobile), &((*scm).cmobile));
-  array_int_init(&((*scm).cmobile_map), (*sc).top.v.len);
-  (*scm).cmobile_map.len = (*sc).top.v.len;
-  for (int i = 0; i < (*sc).top.v.len; i++)
-    {
-      (*scm).cmobile_map.e[i] = -1;
-    }
-  for (int mi = 0; mi < (*scm).cmobile.len; mi++)
-    {
-      (*scm).cmobile_map.e[(*scm).cmobile.e[mi]] = mi;
-    }
-  contract_leaves(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  contract_elbows(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  int n_vars = (*scm).cmobile.len * (*sc).dim;
-  (*scm).n_vars = n_vars;
-  (*scm).solver = gsl_multimin_fminimizer_alloc(gsl_multimin_fminimizer_nmsimplex2, n_vars);
-  (*scm).solver_data.f = total_length_func;
-  (*scm).solver_data.params = (*scm).pars;
-  (*scm).solver_data.n = n_vars;
-  (*tlf_pars).sc = sc;
-  (*tlf_pars).top = &((*scm).top);
-  (*tlf_pars).cmobile = &((*scm).cmobile);
-  (*tlf_pars).cmobile_map = &((*scm).cmobile_map);
-  (*tlf_pars).c_map = &((*scm).c_map);
-  (*tlf_pars).core_radsq = 1e-32;
-  (*scm).c_data = gsl_vector_alloc(n_vars);
-  array_int_init(&((*scm).c_map), (*scm).cmobile.len);
-  (*scm).c_map.len = (*scm).cmobile.len;
-  read_mobile_coords_string_config(sc, &((*scm).top), &((*scm).cmobile), (*scm).c_data, &((*scm).c_map));
-  gsl_vector *smplx = gsl_vector_alloc(n_vars);
-  gsl_vector_set_all(smplx, stepsize);
-  gsl_multimin_fminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, smplx);
-  (*scm).smplx = smplx;
-  //gsl_vector_free(smplx);
-}
-
-void free_sc_minimizer_nm(sc_minimizer_nm *scm)
-{
-  free((*scm).pars);
-  gsl_multimin_fminimizer_free((*scm).solver);
-  free_array_int(&((*scm).c_map));
-  gsl_vector_free((*scm).c_data);
-  free_contr_nbrlist(&((*scm).top));
-  free_array_int(&((*scm).cmobile));
-  free_array_int(&((*scm).cmobile_map));
-  gsl_vector_free((*scm).smplx);
-}
-
-// RESUME: test these after testing the characteristics of each solver with singular input
-// (whether merging vertices converge to the same point, 'hover' around a common center (with some characteristic radius),
-// or move unpredictably.)
-void sc_minimizer_nm_reset(sc_minimizer_nm *scf)
-{
-  printf("sc_minimizer_nm_reset:\n");
-  string_config *sc = (*scf).sc;
-  int n_vars = (*(*scf).sc).dim * (*(*scf).sc).mobile.len;
-  if (n_vars > (*scf).n_vars)
-    {
-      printf("Allocating new data for expanded coordinates\n");
-      //gsl_vector_memcpy((*scf).c_data, (*scf).solver->x);
-      gsl_vector *nc_data = gsl_vector_alloc(n_vars);
-      sc_solver_expand((*scf).sc, &((*scf).top), &((*scf).cmobile), &((*scf).cmobile_map), &((*scf).c_map), (*scf).solver->x, nc_data);
-      (*scf).n_vars = n_vars;
-      gsl_multimin_fminimizer_free((*scf).solver);
-      gsl_vector_free((*scf).c_data);
-      (*scf).c_data = nc_data;
-      (*scf).solver = gsl_multimin_fminimizer_alloc(gsl_multimin_fminimizer_nmsimplex2, (*scf).n_vars);
-      gsl_vector_free((*scf).smplx);
-      gsl_vector *smplx = gsl_vector_alloc((*scf).n_vars);
-      (*scf).solver_data.n = (*scf).n_vars; // RESUME: check if this step appears in mm_reset
-      (*scf).smplx = smplx;
-      printf("(done)\n");
-    }
-  double stepsize = sqrt(string_config_var_x((*scf).sc)) * 0.01;
-  gsl_vector_set_all((*scf).smplx, stepsize);
-  gsl_multimin_fminimizer_set((*scf).solver, &((*scf).solver_data), (*scf).c_data, (*scf).smplx);
-  printf("(done)\n");
-}
-
-void sc_minimizer_nm_check_merging(sc_minimizer_nm *scm, double merge_rad)
-{
-  //void sc_minimizer_check_merging(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector **c_data, double merge_rad)
-  int init_n_vs = (*scm).cmobile.len;
-  contr_nbrlist *top = &((*scm).top);
-  array_int *cmobile = &((*scm).cmobile);
-  array_int *cmobile_map = &((*scm).cmobile_map);
-  array_int *c_map = &((*scm).c_map);
-  //gsl_vector_memcpy((*scm).c_data, (*scm).solver->x);
-  gsl_vector *c_data = gsl_vector_alloc((*(*scm).c_data).size);
-  gsl_vector_memcpy(c_data, (*scm).solver->x);
-  sc_minimizer_check_merging((*scm).sc, top, cmobile, cmobile_map, c_map, &c_data, merge_rad);
-  int final_n_vs = (*cmobile).len;
-  if (final_n_vs != init_n_vs)
-    {
-      //      printf("sc_minimizer_nm_check_merging: resetting solver\n");
-      // Reset the solver
-      //printf("Resetting nm solver\n");
-      (*scm).n_vars = (*c_data).size;
-      //printf("Freeing solver\n");
-      //      printf("Freeing simplex\n");
-      gsl_vector_free((*scm).smplx);
-      gsl_vector_free((*scm).c_data);
-      //      printf("Freeing solver\n");
-      gsl_multimin_fminimizer_free((*scm).solver); // check that this doesn't also free c_data
-      //printf("Reallocating solver\n");
-      (*scm).solver = gsl_multimin_fminimizer_alloc(gsl_multimin_fminimizer_nmsimplex2, (*scm).n_vars);
-      //printf("Setting solver_data.n\n");
-      (*scm).solver_data.n = (*c_data).size;
-      //printf("Setting starting simplex\n");
-      // double sc_minimizer_var_mobile_coords(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *c_map, const gsl_vector *c_data)
-      gsl_vector *smplx = gsl_vector_alloc((*scm).n_vars);
-      double stepsize = sqrt(string_config_var_x((*scm).sc)) * 0.01; //sqrt(sc_minimizer_var_mobile_coords((*scm).sc, top, cmobile, c_map, c_data)) / (*cmobile).len * 0.01;
-      gsl_vector_set_all(smplx, stepsize);
-      //printf("Setting solver\n");
-      //      printf("Setting solver\n");
-      (*scm).c_data = c_data;
-      gsl_multimin_fminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, smplx);
-      //printf("(done)\n");
-      
-      (*scm).smplx = smplx;
-      //printf("(done)\n");
-    }
-}
-
-int sc_minimizer_nm_iterate(sc_minimizer_nm *scm)
-{
-  sc_minimizer_nm_counter += 1;
-  return gsl_multimin_fminimizer_iterate((*scm).solver);
-}
-
-void sc_minimizer_nm_relax_diag(sc_minimizer_nm *scm, int n_steps, FILE *ofile)
-{
-  if (ofile != NULL)
-    {
-      for (int i = 0; i < n_steps; i++)
-	{
-	  int status = sc_minimizer_nm_iterate(scm);
-	  gsl_vector *x = (*(*scm).solver).x;
-	  fprintf(ofile, "%d ", status);
-	  for (int vi = 0; vi < (*x).size; vi++) fprintf(ofile, "%g ", gsl_vector_get(x, vi));
-	  double l = total_length_func(x, (*scm).pars);
-	  fprintf(ofile, ": %g %g\n", gsl_multimin_fminimizer_size((*scm).solver), l);
-	}
-    }
-}
-
 void check_consistency_ctop(string_config *sc, contr_nbrlist *top)
 {
   for (int i = 0; i < (*sc).top.v.len; i++)
@@ -2036,10 +2168,12 @@ void check_consistency_ctop(string_config *sc, contr_nbrlist *top)
 	{
 	  int ii = (*sc).top.v.e[i].e[ni];
 	  int cii = (*top).map.e[ii];
+	  if (ci != cii) {}
+	  else continue;
 	  if (nbrlist_has_edge(&((*top).top.top), ci, cii)) {}
 	  else
 	    {
-	      printf("Inconsistency found between contracted and uncontracted topology!\n");
+	      printf("Inconsistency found between contracted and uncontracted topology! Edge (%d, %d) maps to missing edge (%d, %d)\n", i, ii, ci, cii);
 	      exit(EXIT_FAILURE);
 	    }
 	}
@@ -2114,13 +2248,13 @@ void check_consistency_edge_wts(contr_nbrlist *aux)
     }
 }
 
-void sc_minimizer_init_common_exp(contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector **c_data, total_length_func_pars *tlf_pars, string_config *sc, contr_nbrlist *top0, array_int *cmobile0, array_int *cmobile_map0, array_int *c_map0, const gsl_vector *x0)
+void sc_minimizer_init_common_exp(contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector **c_data, total_length_pars *tlf_pars, string_config *sc, contr_nbrlist *top0, array_int *cmobile0, array_int *cmobile_map0, array_int *c_map0, const gsl_vector *x0)
 {
   // RESUME: change this to transcribe contracted topology and coordinate data explicitly
   contr_nbrlist_init(top, &((*sc).top), &((*sc).edge_wts));
   prep_contr_list(&((*sc).mobile), cmobile, cmobile_map, (*sc).top.v.len);
-  contract_leaves(top, NULL, cmobile, cmobile_map);
-  contract_elbows(top, NULL, cmobile, cmobile_map);
+  contract_leaves(sc, top, NULL, cmobile, cmobile_map);
+  contract_elbows(sc, top, NULL, cmobile, cmobile_map);
   array_int_init(c_map, (*cmobile).len);
   (*c_map).len = (*cmobile).len;
   int n_vars = (*cmobile).len * (*sc).dim;
@@ -2134,14 +2268,14 @@ void sc_minimizer_init_common_exp(contr_nbrlist *top, array_int *cmobile, array_
   (*tlf_pars).core_radsq = 1e-32;
 }
 
-void sc_minimizer_init_common(contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector **c_data, total_length_func_pars *tlf_pars, string_config *sc)
+void sc_minimizer_init_common(contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector **c_data, total_length_pars *tlf_pars, string_config *sc)
 {
   contr_nbrlist_init(top, &((*sc).top), &((*sc).edge_wts));
   // Contract elbows and leaves
   prep_contr_list(&((*sc).mobile), cmobile, cmobile_map, (*sc).top.v.len);
-  contract_leaves(top, NULL, cmobile, cmobile_map);
+  contract_leaves(sc, top, NULL, cmobile, cmobile_map);
   check_consistency_cmobile(sc, top, cmobile, cmobile_map);
-  contract_elbows(top, NULL, cmobile, cmobile_map);
+  contract_elbows(sc, top, NULL, cmobile, cmobile_map);
   check_consistency_edge_wts(top);
   check_consistency_cmobile(sc, top, cmobile, cmobile_map);
   array_int_init(c_map, (*cmobile).len);
@@ -2149,67 +2283,32 @@ void sc_minimizer_init_common(contr_nbrlist *top, array_int *cmobile, array_int 
   int n_vars = (*cmobile).len * (*sc).dim;
   (*c_data) = gsl_vector_alloc(n_vars);
   read_mobile_coords_string_config(sc, top, cmobile, (*c_data), c_map);
-  total_length_func_pars_init(tlf_pars, sc, c_map, 1e-32);
-  (*tlf_pars).top = top;
-  (*tlf_pars).cmobile = cmobile;
-  (*tlf_pars).cmobile_map = cmobile_map;
-}
-
-void sc_minimizer_fin_init(sc_minimizer_fin *scf, string_config *sc)
-{
-  printf("sc_minimizer_fin_init:\n");
-  sc_minimizer_init_common(&((*scf).top), &((*scf).cmobile), &((*scf).cmobile_map), &((*scf).c_map), &((*scf).c_data), &((*scf).tlf_pars), sc);
-  int n_vars = ((*scf).c_data -> size);
-  (*scf).sc = sc;
-  (*scf).solver_data.f = grad_length_func;
-  (*scf).solver_data.df = Hess_length_func;
-  (*scf).solver_data.fdf = length_func_fdf;
-  (*scf).solver_data.params = &((*scf).tlf_pars);
-  (*scf).solver_data.n = n_vars;
-  (*scf).n_vars = n_vars;
-  (*scf).solver = gsl_multiroot_fdfsolver_alloc(gsl_multiroot_fdfsolver_gnewton, (*scf).n_vars);
-  gsl_multiroot_fdfsolver_set((*scf).solver, &((*scf).solver_data), (*scf).c_data);
-  printf("(done)\n");
+  total_length_pars_init(tlf_pars, sc, c_map, top, cmobile, cmobile_map);
 }
 
 void sc_minimizer_fin_init_exp(sc_minimizer_fin *scm, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, const gsl_vector *x)
 {
-  printf("sc_minimizer_fin_init_exp:\n");
-  // RESUME: Transcribe topology, cmobile, etc., define multiroot_function_fdf, set the solver
-  printf("transcribing contr_nbrlist\n");
-  transcribe_contr_nbrlist(top, &((*scm).top));
-  transcribe_array_int(cmobile, &((*scm).cmobile));
-  printf("cmobile: %d\n", (*scm).cmobile.len);
-  transcribe_array_int(cmobile_map, &((*scm).cmobile_map));
-  printf("cmobile_map: %d\n", (*scm).cmobile_map.len);
-  transcribe_array_int(c_map, &((*scm).c_map));
+  (*scm).sc = sc;
+  (*scm).top = top;
+  (*scm).cmobile = cmobile;
+  (*scm).cmobile_map = cmobile_map;
+  (*scm).c_map = c_map;
   (*scm).c_data = gsl_vector_alloc((*x).size);
   gsl_vector_memcpy((*scm).c_data, x);
-  (*scm).solver_data.f = grad_length_func;
-  (*scm).solver_data.fdf = length_func_fdf;
-  (*scm).solver_data.df = Hess_length_func;
+  (*scm).solver_data.f = grad_length_f;
+  (*scm).solver_data.fdf = grad_length_fdf;
+  (*scm).solver_data.df = grad_length_df;
   (*scm).solver_data.params = &((*scm).tlf_pars);
-  (*scm).tlf_pars.top = top;
-  (*scm).tlf_pars.cmobile = cmobile;
-  (*scm).tlf_pars.cmobile_map = cmobile_map;
-  (*scm).tlf_pars.c_map = c_map;
-  (*scm).tlf_pars.core_radsq = 1e-32;
-  (*scm).tlf_pars.sc = sc;
+  total_length_pars_init(&((*scm).tlf_pars), sc, c_map, top, cmobile, cmobile_map);
   int n_vars = (*x).size;
   (*scm).solver_data.n = n_vars;
   (*scm).n_vars = n_vars;
-  (*scm).solver = gsl_multiroot_fdfsolver_alloc(gsl_multiroot_fdfsolver_gnewton, (*scm).n_vars);
-  printf("Attempting to set solver\n");
+  (*scm).solver = gsl_multiroot_fdfsolver_alloc(gsl_multiroot_fdfsolver_hybridsj, (*scm).n_vars);
   gsl_multiroot_fdfsolver_set((*scm).solver, &((*scm).solver_data), (*scm).c_data);
-  printf("(done)\n");
 }
 
 void free_sc_minimizer_fin(sc_minimizer_fin *scm)
 {
-  free_contr_nbrlist(&((*scm).top));
-  free_array_int(&((*scm).cmobile));
-  free_array_int(&((*scm).cmobile_map));
-  free_array_int(&((*scm).c_map));
   gsl_vector_free((*scm).c_data);
   gsl_multiroot_fdfsolver_free((*scm).solver);
 }
@@ -2219,26 +2318,33 @@ int sc_minimizer_fin_iterate(sc_minimizer_fin *scm)
   return gsl_multiroot_fdfsolver_iterate((*scm).solver);
 }
 
-///void sc_minimizer_fin_check_merging(sc_minimizer_fin *scm, double rad);
 int sc_minimizer_fin_relax(sc_minimizer_fin *scm, double prec)
 {
   int rstatus = GSL_CONTINUE;
   int count = 0;
   while (count < MAX_ITER)
     {
-      count += 1;
       int status = sc_minimizer_fin_iterate(scm);
-      gsl_vector *dx = gsl_multiroot_fdfsolver_dx((*scm).solver);
-      gsl_vector *f = gsl_multiroot_fdfsolver_f((*scm).solver);
-      double *dx_ = gsl_vector_ptr(dx, 0);
-      double *f_ = gsl_vector_ptr(f, 0);
-      double err = sqrt(euclid_normsq(dx_, (*dx).size) + euclid_normsq(f_, (*dx).size));
-      if (err < prec)
+      if (status == GSL_SUCCESS)
 	{
-	  rstatus = GSL_SUCCESS;
+	  gsl_vector *dx = gsl_multiroot_fdfsolver_dx((*scm).solver);
+	  gsl_vector *f = gsl_multiroot_fdfsolver_f((*scm).solver);
+	  double err = gsl_blas_dnrm2(f) + gsl_blas_dnrm2(dx);
+	  if (err < prec)
+	    {
+	      rstatus = GSL_SUCCESS;
+	      break;
+	    }
+	  //	  printf("Iteration %d: err = %g min_sep = %g, total_length_df_counter = %d\n", count, err, min_sep, get_total_length_df_counter());
+	  count += 1;
+	}
+      else
+	{
+	  //printf("terminated with status %d\n", status);
 	  break;
 	}
     }
+  return rstatus;
 }
 
 void sc_minimizer_fin_relax_diag(sc_minimizer_fin *scm, int N_steps, FILE *ofile)
@@ -2252,109 +2358,164 @@ void sc_minimizer_fin_relax_diag(sc_minimizer_fin *scm, int N_steps, FILE *ofile
 	  for (int di = 0; di < (*scm).n_vars; di++) fprintf(ofile, "%g ", gsl_vector_get((*scm).solver->x, di));
 	  gsl_vector *dx = gsl_multiroot_fdfsolver_dx((*scm).solver);
 	  gsl_vector *f = gsl_multiroot_fdfsolver_f((*scm).solver);
-	  double len = total_length_func((*scm).solver->x, &((*scm).tlf_pars));
-	  double err = sqrt(euclid_normsq(gsl_vector_ptr(dx, 0), (*dx).size) + euclid_normsq(gsl_vector_ptr(f, 0), (*dx).size));
+	  double len = total_length_f((*scm).solver->x, &((*scm).tlf_pars));
+	  double err = gsl_blas_dnrm2(dx) + gsl_blas_dnrm2(f);
 	  fprintf(ofile, "%g %g\n", len, err);
 	}
     }
 }
 
-// Root-finder minimizer (which may also be used for polishing)
-
-void sc_minimizer_rf_init(sc_minimizer_rf *scf, string_config *sc, double stepsize)
+void sc_minimizer_hfin_init_exp(sc_minimizer_hfin *scm, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, const gsl_vector *x, int ext_f_site, double *ext_f, double L0, double k)
 {
-  printf("sc_minimizer_rf_init:\n");
+  (*scm).sc = sc;
+  (*scm).top = top;
+  (*scm).cmobile = cmobile;
+  (*scm).cmobile_map = cmobile_map;
+  (*scm).c_map = c_map;
+  (*scm).c_data = gsl_vector_alloc((*x).size);
+  gsl_vector_memcpy((*scm).c_data, x);
+  (*scm).solver_data.f = grad_heuristic_f;
+  (*scm).solver_data.fdf = grad_heuristic_fdf;
+  (*scm).solver_data.df = grad_heuristic_df;
+  (*scm).solver_data.params = &((*scm).h_pars);
+  heuristic_pars_init(&((*scm).h_pars), sc, top, cmobile, cmobile_map, c_map, ext_f_site, ext_f, L0, k);
+  int n_vars = (*x).size;
+  (*scm).solver_data.n = n_vars;
+  (*scm).n_vars = n_vars;
+  (*scm).solver = gsl_multiroot_fdfsolver_alloc(gsl_multiroot_fdfsolver_hybridsj, (*scm).n_vars);
+  gsl_multiroot_fdfsolver_set((*scm).solver, &((*scm).solver_data), (*scm).c_data);
+}
+
+void free_sc_minimizer_hfin(sc_minimizer_hfin *scm)
+{
+  gsl_vector_free((*scm).c_data);
+  gsl_multiroot_fdfsolver_free((*scm).solver);
+}
+
+int sc_minimizer_hfin_iterate(sc_minimizer_hfin *scm)
+{
+  return gsl_multiroot_fdfsolver_iterate((*scm).solver);
+}
+
+int sc_minimizer_hfin_relax(sc_minimizer_hfin *scm, double prec)
+{
+  int rstatus = GSL_CONTINUE;
+  int count = 0;
+  while (count < MAX_ITER)
+    {
+      int status = sc_minimizer_hfin_iterate(scm);
+      if (status == GSL_SUCCESS)
+	{
+	  gsl_vector *dx = gsl_multiroot_fdfsolver_dx((*scm).solver);
+	  gsl_vector *f = gsl_multiroot_fdfsolver_f((*scm).solver);
+	  double err = gsl_blas_dnrm2(f) + gsl_blas_dnrm2(dx);
+	  if (err < prec)
+	    {
+	      rstatus = GSL_SUCCESS;
+	      break;
+	    }
+	  count += 1;
+	}
+      else
+	{
+	  break;
+	}
+    }
+  return rstatus;
+}
+
+void sc_minimizer_hfin_relax_diag(sc_minimizer_hfin *scm, int N_steps, FILE *ofile)
+{
+  for (int i = 0; i < N_steps; i++)
+    {
+      int status = sc_minimizer_hfin_iterate(scm);
+      if (ofile != NULL)
+	{
+	  fprintf(ofile, "%d ", status);
+	  for (int di = 0; di < (*scm).n_vars; di++) fprintf(ofile, "%g ", gsl_vector_get((*scm).solver->x, di));
+	  gsl_vector *dx = gsl_multiroot_fdfsolver_dx((*scm).solver);
+	  gsl_vector *f = gsl_multiroot_fdfsolver_f((*scm).solver);
+	  double H = heuristic_f((*scm).solver->x, &((*scm).h_pars));
+	  double err = gsl_blas_dnrm2(dx) + gsl_blas_dnrm2(f);
+	  fprintf(ofile, "%g %g\n", H, err);
+	}
+    }
+}
+
+void sc_minimizer_rf_init_exp(sc_minimizer_rf *scf, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector *x, int (*f)(const gsl_vector *, void *, gsl_vector *), void *pars)
+{
   (*scf).sc = sc;
-  contr_nbrlist_init(&((*scf).top), &((*sc).top), &((*sc).edge_wts));
-  // Contract elbows and leaves
-  prep_contr_list(&((*sc).mobile), &((*scf).cmobile), &((*scf).cmobile_map), (*sc).top.v.len);
-  contract_leaves(&((*scf).top), NULL, &((*scf).cmobile), &((*scf).cmobile_map));
-  check_consistency_cmobile(sc, &((*scf).top), &((*scf).cmobile), &((*scf).cmobile_map));
-  printf("test\n");
-  contract_elbows(&((*scf).top), NULL, &((*scf).cmobile), &((*scf).cmobile_map));
-  check_consistency_edge_wts(&((*scf).top));
-  check_consistency_cmobile(sc, &((*scf).top), &((*scf).cmobile), &((*scf).cmobile_map));
-  array_int_init(&((*scf).c_map), (*scf).cmobile.len);
-  (*scf).c_map.len = (*scf).cmobile.len;
-  int n_vars = (*scf).cmobile.len * (*sc).dim;
-  (*scf).c_data = gsl_vector_alloc(n_vars);
-  printf("Attempting to read mobile coords\n");
-  read_mobile_coords_string_config(sc, &((*scf).top), &((*scf).cmobile), (*scf).c_data, &((*scf).c_map));
-  printf("\t(done)\n");
-  (*scf).solver_data.f = grad_length_func;
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) malloc(sizeof(total_length_func_pars));
-  total_length_func_pars_init(tlf_pars, sc, &((*scf).c_map), 1e-32);
-  (*scf).pars = tlf_pars;
-  (*tlf_pars).top = &((*scf).top);
-  (*tlf_pars).cmobile = &((*scf).cmobile);
-  (*tlf_pars).cmobile_map = &((*scf).cmobile_map);
-  //  (*scf).tlf_pars.core_radsq = 1e-32;
-  (*scf).solver_data.params = (*scf).pars;
-  (*scf).solver_data.n = n_vars;
-  (*scf).n_vars = n_vars;
+  (*scf).pars = pars;
+  (*scf).top = top;
+  (*scf).cmobile = cmobile;
+  (*scf).cmobile_map = cmobile_map;
+  (*scf).c_map = c_map;
+  (*scf).c_data = gsl_vector_alloc((*x).size);
+  gsl_vector_memcpy((*scf).c_data, x);
+  (*scf).solver_data.f = f;
+  (*scf).solver_data.n = (*x).size;
+  (*scf).solver_data.params = pars;
+  (*scf).n_vars = (*x).size;
   (*scf).solver = gsl_multiroot_fsolver_alloc(gsl_multiroot_fsolver_hybrids, (*scf).n_vars);
-  printf("Setting solver\n");
   gsl_multiroot_fsolver_set((*scf).solver, &((*scf).solver_data), (*scf).c_data);
-  printf("(done)\n");
 }
 
 void free_sc_minimizer_rf(sc_minimizer_rf *scf)
 {
-  printf("free_sc_minimizer_rf\n");
   gsl_vector_free((*scf).c_data);
-  free_array_int(&((*scf).c_map));
   gsl_multiroot_fsolver_free((*scf).solver);
-  free_contr_nbrlist(&((*scf).top));
-  free_array_int(&((*scf).cmobile));
-  free_array_int(&((*scf).cmobile_map));
-  printf("(done)\n");
 }
 
-// RESUME: update usage to include new arguments (c_map, cmobile)
-double sc_minimizer_var_mobile_coords(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *c_map, const gsl_vector *c_data)
+int sc_minimizer_rf_iterate(sc_minimizer_rf *scf)
 {
-  double var = 0;
-  double com[(*sc).dim];
-  for (int i = 0; i < (*sc).dim; i++) com[i] = 0;
-  for (int fi = 0; fi < (*sc).fxd.len; fi++)
+  sc_minimizer_rf_counter += 1;
+  return gsl_multiroot_fsolver_iterate((*scf).solver);
+}
+
+int sc_minimizer_rf_relax(sc_minimizer_rf *scm, double tol)
+{
+  double tolsq = tol * tol;
+  //(*scm).tlf_pars.core_radsq = tolsq / (*(*scm).sc).dim;
+  int status_ = GSL_CONTINUE;
+  int count = 0;
+  while (count < MAX_ITER)
     {
-      int i = (*sc).fxd.e[fi];
-      const double *xi = string_config_vertex_coords(sc, i);
-      for (int di = 0; di < (*sc).dim; di++) com[di] += xi[di];
-    }
-  for (int mi = 0; mi < (*cmobile).len; mi++)
-    {
-      int ci = (*cmobile).e[mi];
-      const double *xi = gsl_vector_const_ptr(c_data, (*c_map).e[mi]);
-      if (top == NULL) for (int di = 0; di < (*sc).dim; di++) com[di] += xi[di];
-      else for (int di = 0; di < (*sc).dim; di++) com[di] += (*top).fibers.e[ci].len * xi[di];
-    }
-  double wt = 1. / (*sc).top.v.len;
-  for (int di = 0; di < (*sc).dim; di++) com[di] *= wt;
-  for (int fi = 0; fi < (*sc).fxd.len; fi++)
-    {
-      int i = (*sc).fxd.e[fi];
-      const double *xi = string_config_vertex_coords(sc, i);
-      for (int di = 0; di < (*sc).dim; di++)
+      count += 1;
+      int status = sc_minimizer_rf_iterate(scm);
+      if (status == GSL_SUCCESS)
 	{
-	  double delx = xi[di] - com[di];
-	  var += delx * delx;
+	  gsl_vector *dx = gsl_multiroot_fsolver_dx((*scm).solver);
+	  double *dx_ = gsl_vector_ptr(dx, 0);
+	  double normsqdx = euclid_normsq(dx_, (*dx).size);
+	  if (normsqdx > 0)
+	    {
+	      if (normsqdx < tolsq)
+		{
+		  status_ = GSL_SUCCESS;
+		  break;
+		}
+	    }
+	}
+      else
+	{
+	  status_ = status;
+	  break;
 	}
     }
-  for (int mi = 0; mi < (*cmobile).len; mi++)
+  return status_;
+}
+
+int sc_minimizer_rf_relax_diag(sc_minimizer_rf *scf, int n_steps, FILE *ofile)
+{
+  for (int i = 0; i < n_steps; i++)
     {
-      int ci = (*cmobile).e[mi];
-      const double *xi = gsl_vector_const_ptr(c_data, (*c_map).e[mi]);
-      for (int di = 0; di < (*sc).dim; di++)
-	{
-	  double delx = xi[di] - com[di];
-	  delx *= delx;
-	  if (top == NULL) {}
-	  else delx *= (*top).fibers.e[ci].len;
-      	  var += delx;
-	}
+      int status = gsl_multiroot_fsolver_iterate((*scf).solver);
+      fprintf(ofile, "%d ", status);
+      for (int ci = 0; ci < (*(*scf).solver).x->size; ci++) fprintf(ofile, "%g ", gsl_vector_get((*(*scf).solver).x, ci));
+      gsl_vector *f = gsl_multiroot_fsolver_f((*scf).solver);
+      double norm_f = gsl_blas_dnrm2(f);
+      fprintf(ofile, "%g\n", norm_f);
     }
-  return var / (*sc).top.v.len;
 }
 
 // NOTE: Make sure that 'c_map' and coordinate/force data (e.g. solvers) are updated concurrently (if necessary)
@@ -2438,119 +2599,29 @@ void sc_minimizer_set_clusters_exp(string_config *sc, contr_nbrlist *aux, array_
     }
 }
 
-// NOTE: this function is probably superfluous (because the 'rf' solver typically separates merging vertices)
-void sc_minimizer_rf_reset(sc_minimizer_rf *scf, double epsilon, const gsl_multiroot_fsolver_type *gsl_fsolver_type)
-{
-  gsl_fsolver_type = gsl_fsolver_type == NULL ? gsl_multiroot_fsolver_hybrids : gsl_fsolver_type;
-  string_config *sc = (*scf).sc;
-  double epsq = epsilon * epsilon;
-  sc_minimizer_set_clusters_exp((*scf).sc, &((*scf).top), &((*scf).cmobile), &((*scf).cmobile_map), &((*scf).c_map), (*scf).solver->x, epsilon);
-  // Re-read coordinates
-  // Re-read coordinates and reset the solver
-  (*scf).n_vars = (*scf).cmobile.len * (*sc).dim;
-  gsl_vector_free((*scf).c_data);
-  (*scf).c_data = gsl_vector_alloc((*scf).n_vars);
-  read_mobile_coords_string_config(sc, &((*scf).top), &((*scf).cmobile), (*scf).c_data, &((*scf).c_map));
-  gsl_multiroot_fsolver_free((*scf).solver);
-  (*scf).solver = gsl_multiroot_fsolver_alloc(gsl_fsolver_type, (*scf).n_vars);
-  (*scf).solver_data.n = (*scf).n_vars;
-  gsl_multiroot_fsolver_set((*scf).solver, &((*scf).solver_data), (*scf).c_data);
-}
-
-int sc_minimizer_rf_iterate(sc_minimizer_rf *scf)
-{
-  sc_minimizer_rf_counter += 1;
-  return gsl_multiroot_fsolver_iterate((*scf).solver);
-}
-
-int sc_minimizer_rf_relax(sc_minimizer_rf *scm, double tol)
-{
-  double tolsq = tol * tol;
-  //(*scm).tlf_pars.core_radsq = tolsq / (*(*scm).sc).dim;
-  int status_ = GSL_CONTINUE;
-  int count = 0;
-  while (count < MAX_ITER)
-    {
-      count += 1;
-      int status = sc_minimizer_rf_iterate(scm);
-      if (status == GSL_SUCCESS)
-	{
-	  gsl_vector *dx = gsl_multiroot_fsolver_dx((*scm).solver);
-	  double *dx_ = gsl_vector_ptr(dx, 0);
-	  double normsqdx = euclid_normsq(dx_, (*dx).size);
-	  if (normsqdx > 0)
-	    {
-	      if (normsqdx < tolsq)
-		{
-		  status_ = GSL_SUCCESS;
-		  break;
-		}
-	    }
-	}
-      else
-	{
-	  status_ = status;
-	  break;
-	}
-    }
-  return status_;
-}
-
-double aux_gsl_vector_dot(gsl_vector *a, gsl_vector *b)
-{
-  double dp = 0;
-  double *a_ = gsl_vector_ptr(a, 0);
-  double *b_ = gsl_vector_ptr(b, 0);
-  int len = (*a).size;
-  for (int i = 0; i < len; i++)
-    {
-      dp += a_[i] * b_[i];
-    }
-  return dp;
-}
-
-int sc_minimizer_rf_relax_diag(sc_minimizer_rf *scf, int n_steps, FILE *ofile)
-{
-  for (int i = 0; i < n_steps; i++)
-    {
-      int status = gsl_multiroot_fsolver_iterate((*scf).solver);
-      fprintf(ofile, "%d ", status);
-      for (int ci = 0; ci < (*(*scf).solver).x->size; ci++) fprintf(ofile, "%g ", gsl_vector_get((*(*scf).solver).x, ci));
-      double total_length = total_length_func((*(*scf).solver).x, (*scf).pars);
-      gsl_vector *f = gsl_multiroot_fsolver_f((*scf).solver);
-      double norm_f = sqrt(aux_gsl_vector_dot(f, f));
-      fprintf(ofile, "%g %g %d %d %d\n", total_length, norm_f, total_length_func_counter, grad_total_length_func_counter, comp_total_length_func_counter);
-    }
-}
-
 void sc_minimizer_mm_init_exp(sc_minimizer_mm *scm, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, const gsl_vector *x, double stepsize, double tol)
 {
   (*scm).sc = sc;
+  (*scm).char_length = sqrt(string_config_var_x(sc));
   contr_nbrlist_init(&((*scm).top), &((*sc).top), &((*sc).edge_wts));
   prep_contr_list(&((*sc).mobile), &((*scm).cmobile), &((*scm).cmobile_map), (*sc).top.v.len);
-  contract_leaves(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  contract_elbows(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_leaves(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_elbows(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
   array_int_init(&((*scm).c_map), (*scm).cmobile.len);
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) malloc(sizeof(total_length_func_pars));
+  total_length_pars *tlf_pars = (total_length_pars *) malloc(sizeof(total_length_pars));
   if ((*scm).cmobile.len > 0)
   {
 	  (*scm).c_map.len = (*scm).cmobile.len;
 	  int n_vars = (*scm).cmobile.len * (*sc).dim;
 	  (*scm).c_data = gsl_vector_alloc(n_vars);
 	  sc_solver_read_mobile_coords_exp2(sc, top, cmobile, cmobile_map, c_map, x, &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), &((*scm).c_map), (*scm).c_data);
-	  total_length_func_pars_init(tlf_pars, sc, &((*scm).c_map), stepsize);
+	  total_length_pars_init(tlf_pars, sc, &((*scm).c_map), &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map));
 	  (*scm).pars = tlf_pars;
-	  (*tlf_pars).top = &((*scm).top);
-	  (*tlf_pars).cmobile = &((*scm).cmobile);
-	  (*tlf_pars).cmobile_map = &((*scm).cmobile_map);
-	  (*tlf_pars).core_radsq = 1e-32;
 	  (*scm).n_vars = n_vars;
-	  //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-	  //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_multimin_fdfminimizer_steepest_descent, n_vars);
 	  (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-	  (*scm).solver_data.f = total_length_func;
-	  (*scm).solver_data.df = grad_total_length_func;
-	  (*scm).solver_data.fdf = comp_total_length_func;
+	  (*scm).solver_data.f = total_length_f;
+	  (*scm).solver_data.df = total_length_df;
+	  (*scm).solver_data.fdf = total_length_fdf;
 	  (*scm).solver_data.params = (*scm).pars;
 	  (*scm).solver_data.n = n_vars;
 	  gsl_multimin_fdfminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, stepsize, tol);
@@ -2560,68 +2631,55 @@ void sc_minimizer_mm_init_exp(sc_minimizer_mm *scm, string_config *sc, contr_nbr
 	  int n_vars = 0;
 	  (*scm).c_data = NULL;
 	  // This may be unnecessary
-	  total_length_func_pars_init(tlf_pars, sc, &((*scm).c_map), stepsize);
-	  (*tlf_pars).top = &((*scm).top);
-	  (*tlf_pars).cmobile = &((*scm).cmobile);
-	  (*tlf_pars).cmobile_map = &((*scm).cmobile_map);
-	  (*tlf_pars).core_radsq = 1e-32;
+	  	      //void total_length_pars_init(total_length_pars *tlf_pars, string_config *sc, array_int *c_map, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map)
+	  total_length_pars_init(tlf_pars, sc, &((*scm).c_map), &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map));
 	  (*scm).pars = tlf_pars;
 	  (*scm).n_vars = 0;
-	  //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-	  //(*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_multimin_fdfminimizer_steepest_descent, n_vars);
 	  (*scm).solver = NULL;
   }
 }
 
 void sc_minimizer_mm_init(sc_minimizer_mm *scm, string_config *sc)
 {
-  double stepsize = sqrt(string_config_var_x(sc)) * 0.01;
-  double tol = 1e-2;
+  (*scm).char_length = sqrt(string_config_var_x(sc));
+  double stepsize = (*scm).char_length * 0.01;
+  double tol = 1e-3;
   (*scm).sc = sc;
   contr_nbrlist_init(&((*scm).top), &((*sc).top), &((*sc).edge_wts));
   prep_contr_list(&((*sc).mobile), &((*scm).cmobile), &((*scm).cmobile_map), (*sc).top.v.len);
-  contract_leaves(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
-  contract_elbows(&((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_leaves(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
+  contract_elbows(sc, &((*scm).top), NULL, &((*scm).cmobile), &((*scm).cmobile_map));
   array_int_init(&((*scm).c_map), (*scm).cmobile.len);
   (*scm).c_map.len = (*scm).cmobile.len;
-  total_length_func_pars *tlf_pars = (total_length_func_pars *) calloc(1, sizeof(total_length_func_pars));
+  total_length_pars *tlf_pars = (total_length_pars *) calloc(1, sizeof(total_length_pars));
   (*scm).pars = tlf_pars;
+  total_length_pars_init(tlf_pars, sc, &((*scm).c_map), &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map));
   if ((*scm).cmobile.len > 0)
   {
-	  int n_vars = (*scm).cmobile.len * (*sc).dim;
-	  (*scm).n_vars = n_vars;
-	  (*scm).c_data = gsl_vector_alloc(n_vars);
-	  (*scm).solver_data.f = total_length_func;
-	  (*scm).solver_data.df = grad_total_length_func;
-	  (*scm).solver_data.fdf = comp_total_length_func;
-	  (*scm).solver_data.params = (*scm).pars;
-	  (*scm).solver_data.n = n_vars;
-	  read_mobile_coords_string_config(sc, &((*scm).top), &((*scm).cmobile), (*scm).c_data, &((*scm).c_map));
-	  double *c_data_ = gsl_vector_ptr((*scm).c_data, 0);
-	  for (int di = 0; di < (*(*scm).c_data).size; di++)
-	    {
-	      c_data_[di] += stepsize * (rnd() - 0.5);
-	    }
-	  total_length_func_pars_init(tlf_pars, sc, &((*scm).c_map), stepsize);
-	  (*tlf_pars).top = &((*scm).top);
-	  (*tlf_pars).cmobile = &((*scm).cmobile);
-	  (*tlf_pars).cmobile_map = &((*scm).cmobile_map);
-	  (*tlf_pars).core_radsq = 1e-32;
-	  (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
-	  gsl_multimin_fdfminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, stepsize, tol);
+    int n_vars = (*scm).cmobile.len * (*sc).dim;
+    (*scm).n_vars = n_vars;
+    (*scm).c_data = gsl_vector_alloc(n_vars);
+    (*scm).solver_data.f = total_length_f;
+    (*scm).solver_data.df = total_length_df;
+    (*scm).solver_data.fdf = total_length_fdf;
+    (*scm).solver_data.params = (*scm).pars;
+    (*scm).solver_data.n = n_vars;
+    read_mobile_coords_string_config(sc, &((*scm).top), &((*scm).cmobile), (*scm).c_data, &((*scm).c_map));
+    double *c_data_ = gsl_vector_ptr((*scm).c_data, 0);
+    for (int di = 0; di < (*(*scm).c_data).size; di++)
+      {
+	c_data_[di] += stepsize * (rnd() - 0.5);
+      }
+    (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, n_vars);
+    gsl_multimin_fdfminimizer_set((*scm).solver, &((*scm).solver_data), (*scm).c_data, stepsize, tol);
   }
   else
-  {
-	  int n_vars = 0;
-	  (*scm).n_vars = n_vars;
-	  (*scm).c_data = NULL;
-	  total_length_func_pars_init(tlf_pars, sc, &((*scm).c_map), stepsize);
-	  (*tlf_pars).top = &((*scm).top);
-	  (*tlf_pars).cmobile = &((*scm).cmobile);
-	  (*tlf_pars).cmobile_map = &((*scm).cmobile_map);
-	  (*tlf_pars).core_radsq = 1e-32;
-	  (*scm).solver = NULL;
-  }
+    {
+      int n_vars = 0;
+      (*scm).n_vars = n_vars;
+      (*scm).c_data = NULL;
+      (*scm).solver = NULL;
+    }
 }
 
 void free_sc_minimizer_mm(sc_minimizer_mm *scm)
@@ -2759,7 +2817,6 @@ void sc_minimizer_mm_reset(sc_minimizer_mm *scm)
     }
 }
 
-
 int sc_minimizer_mm_solve(sc_minimizer_mm *scm, double tol)
 {
   gsl_vector *x0 = gsl_vector_alloc((*scm).n_vars);
@@ -2779,8 +2836,7 @@ int sc_minimizer_mm_solve(sc_minimizer_mm *scm, double tol)
     {
       count += 1;
       int status = sc_minimizer_mm_relax(scm, tol);
-      // RESUME: check that status is acceptable before progressing (i.e. that the 'relaxation' hasn't terminated in a failure state)
-     
+      // RESUME: check that status is acceptable before progressing (i.e. that the 'relaxation' hasn't terminated in a failure state)     
       char realloc_flag = 0;
       if (contr_nbrlist_fiber_corresp(&t0, &((*scm).top), &((*(*scm).sc).mobile))) {}
       else realloc_flag = 1;
@@ -2793,8 +2849,6 @@ int sc_minimizer_mm_solve(sc_minimizer_mm *scm, double tol)
 	}
       if (realloc_flag)
 	{
-	  // NOTE: there's probably a slightly more efficient approach to this (e.g. 'aligning' contraction t0 with (*scm).top)
-	  // but this isn't (or shouldn't be) the rate-limiting step.
 	  free_contr_nbrlist(&t0);
 	  free_array_int(&cm0);
 	  free_array_int(&cmm0);
@@ -2826,7 +2880,6 @@ int sc_minimizer_mm_relax(sc_minimizer_mm *scm, double tol)
   if ((*scm).n_vars > 0) {}
   else
     {
-      printf("done (trivial case of sc_minimizer_mm)\n");
       return GSL_SUCCESS;
     }
   string_config *sc = (*scm).sc;
@@ -2925,7 +2978,7 @@ void sc_minimizer_mm_check_merging(sc_minimizer_mm *scm, double merge_rad)
 	  // Reset the solver
 	  (*scm).n_vars = (*c_data).size;
 	  (*scm).solver = gsl_multimin_fdfminimizer_alloc(gsl_minimizer_type_mm, (*scm).n_vars);
-	  double stepsize = sqrt(string_config_var_x((*scm).sc)) * 0.01;//sqrt(sc_minimizer_var_mobile_coords((*scm).sc, top, cmobile, c_map, c_data)) / (*cmobile).len * 0.01;
+	  double stepsize = sqrt(string_config_var_x((*scm).sc)) * 0.01;
 	  double tol = 1e-2;
 	  (*scm).solver_data.n = (*c_data).size;
 	  (*scm).c_data = c_data;
@@ -2956,13 +3009,15 @@ int sc_minimizer_mm_iterate(sc_minimizer_mm *scm)
 
 int sc_minimizer_mm_relax_diag(sc_minimizer_mm *scm, int n_steps, FILE *ofile)
 {
+  if (ofile != NULL) {}
+  else ofile = stdout;
   if ((*scm).n_vars > 0) {}
   else
   {
 	printf("Error: sc_minimizer_mm instance has no mobile coordinates\n");
 	return GSL_SUCCESS;
   }
-  total_length_func_pars tlf_pars;
+  total_length_pars tlf_pars;
   tlf_pars.top = &((*scm).top);
   tlf_pars.sc = (*scm).sc;
   tlf_pars.cmobile = &((*scm).cmobile);
@@ -2979,8 +3034,8 @@ int sc_minimizer_mm_relax_diag(sc_minimizer_mm *scm, int n_steps, FILE *ofile)
 	  fprintf(ofile, "%g ", gsl_vector_get(x, ci));
 	}
       gsl_vector *g = gsl_multimin_fdfminimizer_gradient(scm->solver);
-      double norm_g = sqrt(aux_gsl_vector_dot(g, g));
-      fprintf(ofile, "%g %g %d %d %d\n", norm_g, total_length_func(x, &tlf_pars), total_length_func_counter, grad_total_length_func_counter, comp_total_length_func_counter);
+      double norm_g = gsl_blas_dnrm2(g);
+      fprintf(ofile, "%g %g %g %d %d %d\n", norm_g, sc_minimizer_shortest_dist((*scm).sc, &(*scm).top, &(*scm).cmobile, &(*scm).cmobile_map, &(*scm).c_map, (*scm).solver->x), total_length_f(x, &tlf_pars), total_length_f_counter, total_length_df_counter, total_length_fdf_counter);
     }
   return GSL_SUCCESS;
 }
@@ -2994,10 +3049,9 @@ int Lagrange_solver_f(const gsl_vector *c_data, void *params, gsl_vector *f)
   // dE = dtau * (length - sc.L0) + tau * dlength - ext_f . dx_ef
   //
   sc_Lagrange_solver *scs = (sc_Lagrange_solver *) params;
-  string_config *sc = (*scs).sc;
-  
+  string_config *sc = (*scs).sc;  
   double len_disc = Lagrange_solver_f_exp((*scs).sc, &((*scs).top), &((*scs).cmobile), &((*scs).cmobile_map), &((*scs).c_map), c_data, f);
-  //comp_total_length_func_exp(c_data, sc, &((*scs).c_map), &len_disc, f);
+  //total_length_fdf_exp(c_data, sc, &((*scs).c_map), &len_disc, f);
   gsl_vector_scale(f, gsl_vector_get(c_data, (*scs).tau_addr));
   len_disc -= (*scs).len_disc;
   gsl_vector_set(f, (*scs).tau_addr, len_disc);
@@ -3040,7 +3094,7 @@ void add_lower_triangular(gsl_matrix *dest, gsl_matrix *src)
     }
 }
 
-void Lagrange_solver_df_compute_incr(gsl_matrix *incr, const double *xi, const double *xii, double *delx, int wt, double *lensq, double *delta_f_i, double tau)
+char Lagrange_solver_df_compute_incr(gsl_matrix *incr, const double *xi, const double *xii, double *delx, int wt, double *lensq, double *delta_f_i, double tau)
 {
   int dim = (*incr).size1;
   //double delx[dim];
@@ -3082,6 +3136,7 @@ void Lagrange_solver_df_compute_incr(gsl_matrix *incr, const double *xi, const d
 	    }
 	}
     }
+  return 0;
 }
 
 int Lagrange_solver_df(const gsl_vector *c_data, void *params, gsl_matrix *df)
@@ -3387,9 +3442,43 @@ void sc_Lagrange_solver_from_minimizer(sc_Lagrange_solver *scs, sc_minimizer_mm 
     {
       x0[mi] = x0_[mi];
     }
-  double L_init = total_length_func_exp((*scm).solver->x, (*scm).sc, &((*scm).c_map), &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), 1e-32);
+  double L_init = total_length_f_exp((*scm).solver->x, (*scm).sc, &((*scm).c_map), &((*scm).top), &((*scm).cmobile), &((*scm).cmobile_map), 1e-32);
   heuristic_pars *hpars = (heuristic_pars *) (*scm).pars;
   x0[(*scs).tau_addr] = (*hpars).k * (L_init - L);
+  double len = sc_solver_compute_fixed_length_exp(sc, &((*scs).top), &((*scs).cmobile), &((*scs).cmobile_map), &((*scs).c_map), (*scs).c_data);
+  (*scs).len_disc = (*scs).L - len;
+  gsl_multiroot_fdfsolver_set((*scs).solver, &((*scs).solver_data), (*scs).c_data);
+}
+
+void sc_Lagrange_solver_init_exp(sc_Lagrange_solver *scs, string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector *x, double tau, int ext_f_site, double *ext_f, double L)
+{
+  (*scs).sc = sc;
+  (*scs).ext_f_site = ext_f_site;
+  (*scs).ext_f = ext_f;
+  (*scs).L = L;
+  // Consider initializing the solver with minimal total length
+  (*scs).solver_type = POWELL_SOLVER;
+  (*scs).tau_addr = (*x).size;
+  (*scs).n_vars = (*scs).tau_addr + 1;
+  transcribe_contr_nbrlist(top, &((*scs).top));
+  transcribe_array_int(cmobile, &((*scs).cmobile));
+  transcribe_array_int(cmobile_map, &((*scs).cmobile_map));
+  transcribe_array_int(c_map, &((*scs).c_map));
+  (*scs).solver = gsl_multiroot_fdfsolver_alloc(gsl_multiroot_fdfsolver_hybridsj, (*scs).n_vars);
+  (*scs).solver_data.f = Lagrange_solver_f;
+  (*scs).solver_data.df = Lagrange_solver_df;
+  (*scs).solver_data.fdf = Lagrange_solver_fdf;
+  (*scs).solver_data.n = (*scs).n_vars;
+  (*scs).solver_data.params = scs;
+  (*scs).c_data = gsl_vector_alloc((*scs).n_vars);
+  double *x0 = gsl_vector_ptr((*scs).c_data, 0);
+  double *x0_ = gsl_vector_ptr(x, 0);
+  for (int mi = 0; mi < (*x).size; mi++)
+    {
+      x0[mi] = x0_[mi];
+    }
+  //double L_init = total_length_f_exp(x, sc, c_map, top, cmobile, cmobile_map, 1e-32);
+  x0[(*scs).tau_addr] = tau;
   double len = sc_solver_compute_fixed_length_exp(sc, &((*scs).top), &((*scs).cmobile), &((*scs).cmobile_map), &((*scs).c_map), (*scs).c_data);
   (*scs).len_disc = (*scs).L - len;
   gsl_multiroot_fdfsolver_set((*scs).solver, &((*scs).solver_data), (*scs).c_data);
@@ -3415,11 +3504,11 @@ void sc_Lagrange_solver_set(sc_Lagrange_solver *scs, int ext_f_site, double *ext
   gsl_multiroot_fdfsolver_set((*scs).solver, &((*scs).solver_data), (*scs).c_data);
 }
 
-int sc_Lagrange_solver_relax_fdf_diag(sc_Lagrange_solver *scs, int N_steps, FILE *ofile)
+int sc_Lagrange_solver_relax_diag(sc_Lagrange_solver *scs, int N_steps, FILE *ofile)
 {
   for (int ii = 0; ii < N_steps; ii++)
     {
-      printf("Iteration %d:\n", ii);
+      //      printf("Iteration %d:\n", ii);
       int status = gsl_multiroot_fdfsolver_iterate((*scs).solver);
       double *x = gsl_vector_ptr((*scs).solver-> x, 0);
       fprintf(ofile, "%d ", status);
@@ -3432,7 +3521,7 @@ int sc_Lagrange_solver_relax_fdf_diag(sc_Lagrange_solver *scs, int N_steps, FILE
     }
 }
 
-int sc_Lagrange_solver_relax_fdf(sc_Lagrange_solver *scs, double tol)
+int sc_Lagrange_solver_relax(sc_Lagrange_solver *scs, double tol)
 {
   int count = 0;
   int status = 0;
@@ -3483,7 +3572,7 @@ int string_config_relax_Lagrange(string_config *sc, int ext_f_site, double *ext_
   sc_Lagrange_solver scs;
   sc_Lagrange_solver_from_minimizer(&scs, &scm, ext_f_site, ext_f, L);
   free_sc_minimizer_mm(&scm);
-  int status = sc_Lagrange_solver_relax_fdf(&scs, tol);
+  int status = sc_Lagrange_solver_relax(&scs, tol);
   if (status == GSL_SUCCESS)
     {
       printf("Transcribing coordinates\n");
@@ -3497,7 +3586,6 @@ int string_config_relax_Lagrange(string_config *sc, int ext_f_site, double *ext_
 }
 
 // sc_cl_composite_solver
-
 void sc_cl_composite_solver_init(sc_cl_composite_solver *sccs, string_config *sc, int ext_f_site, double *ext_f, double L, double tol)
 {
   (*sccs).tol = tol;
@@ -3505,7 +3593,7 @@ void sc_cl_composite_solver_init(sc_cl_composite_solver *sccs, string_config *sc
   (*sccs).hpars = (heuristic_pars *) (*sccs).scm.pars;
   int status1 = sc_minimizer_mm_solve(&((*sccs).scm), tol);
   sc_Lagrange_solver_from_minimizer(&((*sccs).scLs), &((*sccs).scm), ext_f_site, ext_f, L);
-  int status2 = sc_Lagrange_solver_relax_fdf(&((*sccs).scLs), tol);
+  int status2 = sc_Lagrange_solver_relax(&((*sccs).scLs), tol);
 }
 
 void free_sc_cl_composite_solver(sc_cl_composite_solver *sccs)
@@ -3526,7 +3614,7 @@ double sc_cl_composite_solver_iterate(sc_cl_composite_solver *sccs)
   sc_minimizer_mm_solve(&((*sccs).scm), (*sccs).tol);
   free_sc_Lagrange_solver(&((*sccs).scLs));
   sc_Lagrange_solver_from_minimizer(&((*sccs).scLs), &((*sccs).scm), (*sccs).hpars->ext_f_site, (*sccs).hpars->ext_f, (*sccs).hpars->L0);
-  int status = sc_Lagrange_solver_relax_fdf(&((*sccs).scLs), (*sccs).tol);
+  int status = sc_Lagrange_solver_relax(&((*sccs).scLs), (*sccs).tol);
   double distsq = sc_solver_distsq_exp((*sccs).scLs.sc, &((*sccs).ref_top), &((*sccs).ref_cmobile), &((*sccs).ref_cmobile_map), &((*sccs).ref_c_map), (*sccs).ref_data, &((*sccs).scLs.top), &((*sccs).scLs.cmobile), &((*sccs).scLs.cmobile_map), &((*sccs).scLs.c_map), (*sccs).scLs.solver->x);
   free_contr_nbrlist(&((*sccs).ref_top));
   free_array_int(&((*sccs).ref_cmobile));
@@ -3597,8 +3685,7 @@ void sc_solver_expand(string_config *sc, contr_nbrlist *top, array_int *cmobile,
 }
 
 // Graph operations
-
-void contract_leaves(contr_nbrlist *aux, array_int *bdry, array_int *mobile, array_int *is_mobile)
+void contract_leaves(string_config *sc, contr_nbrlist *aux, array_int *bdry, array_int *mobile, array_int *is_mobile)
 {
   if ((*mobile).len > 0) {}
   else return;
@@ -3643,8 +3730,8 @@ void contract_leaves(contr_nbrlist *aux, array_int *bdry, array_int *mobile, arr
 		  bdry_addr.e[cii] = (*bdry).len;
 		  add2array_int(bdry, cii);
 		}
-	      printf("Attempting to contract %d to %d\n", ci, cii);
 	      contr_nbrlist_merge_cluster(aux, ci, cii);
+	      check_consistency_ctop(sc, aux);
 	      remove_array_int(&bdry_addr, ci); // This should map the last element to 'ci'
 	      if (ci < bdry_addr.len && bdry_addr.e[ci] > -1) (*bdry).e[bdry_addr.e[ci]] = ci;
 	      int mi = (*is_mobile).e[ci];
@@ -3678,7 +3765,7 @@ void contract_leaves(contr_nbrlist *aux, array_int *bdry, array_int *mobile, arr
     }
 }
 
-void contract_elbows(contr_nbrlist *aux, array_int *elbows, array_int *mobile, array_int *is_mobile)
+void contract_elbows(string_config *sc, contr_nbrlist *aux, array_int *elbows, array_int *mobile, array_int *is_mobile)
 {
   if ((*mobile).len > 0) {}
   else return;
@@ -3717,11 +3804,13 @@ void contract_elbows(contr_nbrlist *aux, array_int *elbows, array_int *mobile, a
 	      int wiii = (*aux).top.edge_wts.e[ci].e[1];
 	      if (wii >= wiii) contr_nbrlist_merge_cluster(aux, ci, cii);
 	      else contr_nbrlist_merge_cluster(aux, ci, ciii);
+	      check_consistency_ctop(sc, aux);
 	      int mi = (*is_mobile).e[ci];
 	      remove_array_int(mobile, mi);
-	      remove_array_int(is_mobile, ci);
 	      if ((*mobile).len > mi) (*is_mobile).e[(*mobile).e[mi]] = mi;
+	      remove_array_int(is_mobile, ci);
 	      if ((*is_mobile).len > ci && (*is_mobile).e[ci] > -1) (*mobile).e[(*is_mobile).e[ci]] = ci;
+	      check_consistency_cmobile(sc, aux, mobile, is_mobile);
 	    }
 	  remove_array_int(elbows, 0);
 	  if ((*elbows).len > 0) elbows_addr.e[(*elbows).e[0]] = 0;
@@ -3750,6 +3839,36 @@ void prep_contr_list(array_int *src, array_int *dest, array_int *dest_map, int m
       (*dest).e[mi] = i;
       (*dest_map).e[i] = mi;
     }
+}
+
+double sc_minimizer_shortest_dist_mobile(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector *c_data)
+{
+  if ((*cmobile).len > 0) {}
+  else return -1;
+  double min_distsq = 1e99;
+  for (int mci = 0; mci < (*cmobile).len; mci++)
+    {
+      double *xci = gsl_vector_ptr(c_data, (*c_map).e[mci]);
+      int ci = (*cmobile).e[mci];
+      for (int ni = 0; ni < (*top).top.top.v.e[ci].len; ni++)
+	{
+	  int cii = (*top).top.top.v.e[ci].e[ni];
+	  int mcii = (*cmobile_map).e[cii];
+	  if (mcii < mci) {}
+	  else continue;
+	  double *xcii;
+	  if (mcii > -1) xcii = gsl_vector_ptr(c_data, (*c_map).e[mcii]);
+	  else
+	    {
+	      int rcii = (*top).fibers.e[cii].e[0];
+	      xcii = string_config_vertex_coords(sc, rcii);
+	    }
+	  double distsq = euclid_distsq(xci, xcii, (*sc).dim);
+	  if (distsq < min_distsq) min_distsq = distsq;
+	  if (min_distsq == 0) break;	  
+	}
+    }
+  return sqrt(min_distsq);
 }
 
 double sc_minimizer_shortest_dist(string_config *sc, contr_nbrlist *top, array_int *cmobile, array_int *cmobile_map, array_int *c_map, gsl_vector *c_data)
@@ -3792,7 +3911,6 @@ double sc_minimizer_shortest_dist(string_config *sc, contr_nbrlist *top, array_i
 
 // Arrangements with multiple strings
 // Tack sets
-
 void tack_set_init(tack_set *ts, int dim)
 {
   (*ts).dim = dim;
@@ -3841,6 +3959,11 @@ void add_mbl_pt_tack_set(tack_set *ts, double *x)
   add2array_int(&((*ts).mobile), (*ts).is_fxd.len);
   add2array_char(&((*ts).is_fxd), 0);
   add2array_voidstar(&((*ts).coords), x);
+}
+
+double *tack_set_pos(tack_set *ts, int i)
+{
+  return (double *) (*ts).coords.e[i];
 }
 
 void free_tack_set(tack_set *ts, void (*free_coord_elem)(void *))
@@ -4126,6 +4249,7 @@ void lsc_h_minimizer_init(lsc_h_minimizer *lscm, linked_sc *lsc, int i, double *
 	  exit(EXIT_FAILURE);
 	}
     }
+  (*lscm).char_length = sqrt(tack_set_var_x((*lsc).ts));
   (*lscm).i = i;
   (*lscm).ext_f = ext_f;
   tack_set *ts = (*lsc).ts;
@@ -4634,38 +4758,377 @@ void lsc_h_fdf(const gsl_vector *x, void *pars, double *f, gsl_vector *df)
   lsc_h_df_aux(x, hpars, cpars, ts, &(prefactors[0]), df);
 }
 
+/*
+typedef struct
+{
+  linked_sc *lsc;
+  coord_pars *cpars;
+  // Contracted topologies (as edge-weighted graphs) 
+  array_voidstar *ctops;
+  // Contracted embeddings (as array_ints)
+  array_voidstar *cembs;
+  // Inverse of embeddings (over contracted point-set, or the image of ts_map)
+  aarray_int *cembs_map;
+  double *Ls;
+  int i;
+  double *ext_f;
+} lsc_Lagrange_pars;
+*/
+
+void lsc_Lagrange_pars_init(lsc_Lagrange_pars *lpars, linked_sc *lsc, coord_pars *cpars, array_voidstar *ctops, array_voidstar *cembs, aarray_int *cembs_map, double *Ls, int i, double *ext_f, array_int *l_map)
+{
+  (*lpars).lsc = lsc;
+  (*lpars).cpars = cpars;
+  (*lpars).ctops = ctops;
+  (*lpars).cembs = cembs;
+  (*lpars).cembs_map = cembs_map;
+  (*lpars).Ls = Ls;
+  (*lpars).i = i;
+  (*lpars).ext_f = ext_f;
+  (*lpars).l_map = l_map;
+}
+
 void lsc_L_solver_init(lsc_L_solver *lscs, lsc_h_minimizer *lscm)
 {
-  // TBD
+  (*lscs).lsc = (*lscm).lsc;
+  (*lscs).i = (*lscm).i; // or hpars.i
+  (*lscs).ext_f = (*lscm).ext_f;
+  lsc_Lagrange_pars_init(&((*lscs).lpars), (*lscm).lsc, &((*lscm).cpars), &((*lscm).ctops), &((*lscm).cembs), &((*lscm).cembs_map), (*lscm).Ls, (*lscm).i, (*lscm).ext_f, &((*lscs).l_map));
+  (*lscs).ctops = &((*lscm).ctops);
+  (*lscs).cembs = &((*lscm).cembs);
+  (*lscs).cembs_map = &((*lscm).cembs_map);
+  (*lscs).Ls = (*lscm).Ls;
+  (*lscs).cpars = &((*lscm).cpars);
+  int n_l_vars = (*lscm).ctops.len;
+  if ((*lscm).ext_f == NULL) n_l_vars -= 1;
+  int n_vars = (*lscm).hsolver_data.n + n_l_vars;
+  (*lscs).c_data = gsl_vector_alloc(n_vars);
+  array_int_init(&((*lscs).l_map), (*lscm).ctops.len);
+  int vi = (*lscm).hsolver_data.n;
+  for (int i = 0; i < (*lscm).ctops.len; i++)
+    {
+      if ((*lscm).ext_f != NULL || i != (*lscm).i)
+	{
+	  add2array_int(&((*lscs).l_map), vi);
+	  vi += 1;
+	}
+      else add2array_int(&((*lscs).l_map), -1);
+    }
+  // NOTE: the value(s) of k_i * (L_i - L_i0) could provide semi-accurate initial guesses for the
+  // Lagrange multipliers.
+  gsl_vector_view aux_sv = gsl_vector_subvector((*lscs).c_data, 0, (*lscm).hsolver_data.n);
+  gsl_vector_memcpy(&(aux_sv.vector), (*lscm).hsolver->x);
+  for (int i = 0; i < (*lscm).ctops.len; i++)
+    {
+      // Compute string tension associated with topology 'i'
+      if ((*lscs).l_map.e[i] > -1) {}
+      else continue;
+      double L_i = lsc_string_length((*lscm).ctops.e[i], (*lscm).cembs.e[i], &((*lscm).cpars), (*lscm).hsolver->x);
+      gsl_vector_set((*lscs).c_data, (*lscs).l_map.e[i], (*lscm).hpars.k * (L_i - (*lscm).Ls[i])); // RESUME: CHECK THIS! (depends on implementation of solver, conventions for Lagrange multipliers
+    }
+  (*lscs).Lsolver = gsl_multiroot_fdfsolver_alloc(gsl_multiroot_fdfsolver_hybridsj, n_vars);
+  (*lscs).Lsolver_data.params = &((*lscs).lpars);
+  (*lscs).Lsolver_data.n = n_vars;
+  (*lscs).Lsolver_data.f = lsc_L_f;
+  (*lscs).Lsolver_data.df = lsc_L_df;
+  (*lscs).Lsolver_data.fdf = lsc_L_fdf;
+  gsl_multiroot_fdfsolver_set((*lscs).Lsolver, &((*lscs).Lsolver_data), (*lscs).c_data);
 }
 
 void free_lsc_L_solver(lsc_L_solver *lscs)
 {
-  // TBD
+  gsl_vector_free((*lscs).c_data);
+  gsl_multiroot_fdfsolver_free((*lscs).Lsolver);
+  free_array_int(&((*lscs).l_map));
 }
 
-void lsc_L_solver_iterate(lsc_L_solver *lscs)
+int lsc_L_solver_iterate(lsc_L_solver *lscs)
 {
-  //...
+  return gsl_multiroot_fdfsolver_iterate((*lscs).Lsolver);
 }
 
-void lsc_L_solver_relax(lsc_L_solver *lscs, double tol)
+int lsc_L_solver_relax(lsc_L_solver *lscs, double tol)
 {
-
+  int status = GSL_CONTINUE;
+  double tolsq = tol * tol;
+  while (status == GSL_CONTINUE)
+    {
+      int aux_status = lsc_L_solver_iterate(lscs);
+      if (aux_status == GSL_SUCCESS)
+	{
+	  // Test error
+	  double *dx_ = gsl_vector_ptr(gsl_multiroot_fdfsolver_dx((*lscs).Lsolver), 0);
+	  double *df_ = gsl_vector_ptr(gsl_multiroot_fdfsolver_f((*lscs).Lsolver), 0);
+	  double errsq = euclid_normsq(dx_, (*lscs).Lsolver_data.n) + euclid_normsq(df_, (*lscs).Lsolver_data.n);
+	  if (errsq > tolsq) {}
+	  else
+	    {
+	      status = GSL_SUCCESS;
+	      break;
+	    }
+	}
+      else
+	{
+	  if (aux_status == GSL_ENOPROGJ)
+	    {
+	      // If this occurs, then the heuristic solver failed to find a good initial guess:
+	      status = GSL_ENOPROGJ;
+	      break;
+	    }
+	}
+    }
+  return status;
 }
 void lsc_L_solver_solve(lsc_L_solver *lscs, double tol)
 {
+  // Iteratively relax lscs, check success, refine associated heuristic solver if no progress.
+}
 
+void lsc_solver_add_string_frc(const gsl_vector *x, coord_pars *cpars, void *ctop_, void *cemb_, int l_addr, gsl_vector *f)
+{
+  edge_wtd_graph *ctop = (edge_wtd_graph *) ctop_;
+  array_int *cemb = (array_int *) cemb_;
+  double lambda = l_addr > -1 ? gsl_vector_get(x, l_addr) : 1.0;
+  for (int ti = 0; ti < (*ctop).top.v.len; ti++)
+    {
+      int ci = (*cemb).e[ti];
+      int mci = (*cpars).cmobile_map.e[ci];
+      if (mci > -1) {}
+      else continue;
+      const double *xci = gsl_vector_const_ptr(x, (*cpars).c_map.e[mci]);
+      double *fci = gsl_vector_ptr(f, (*cpars).c_map.e[mci]);
+      for (int ni = 0; ni < (*ctop).top.v.e[ti].len; ni++)
+	{
+	  int tii = (*ctop).top.v.e[ti].e[ni];
+	  int cii = (*cemb).e[tii];
+	  int mcii = (*cpars).cmobile_map.e[cii];
+	  if (mcii < mci) continue;
+	  const double *xcii;
+	  if (mcii > -1) xcii = gsl_vector_const_ptr(x, (*cpars).c_map.e[mcii]);
+	  else
+	    {
+	      xcii = tack_set_pos((*cpars).ts, (*cpars).fibers.e[cii].e[0]); // RESUME: define this!
+	    }
+	  double delxsq = 0;
+	  double delx[(*(*cpars).ts).dim];
+	  for (int di = 0; di < (*(*cpars).ts).dim; di++)
+	    {
+	      delx[di] = xci[di] - xcii[di];
+	      delxsq += delx[di] * delx[di];
+	    }
+	  double C = (*ctop).edge_wts.e[ti].e[ni] * lambda / sqrt(delxsq);
+	  for (int di = 0; di < (*(*cpars).ts).dim; di++)
+	    {
+	      delx[di] *= C;
+	      fci[di] += delx[di];
+	    }
+	  if (mcii > -1)
+	    {
+	      double *fcii = gsl_vector_ptr(f, (*cpars).c_map.e[mcii]);
+	      for (int di = 0; di < (*(*cpars).ts).dim; di++)
+		{
+		  fcii[di] -= delx[di];
+		}
+	    }
+	}
+    }
+}
+
+void lsc_solver_add_all_string_forces(const gsl_vector *x, coord_pars *cpars, array_voidstar *ctops, array_voidstar *cembs, aarray_int *cembs_map, array_int *l_addr, gsl_vector *f)
+{
+  for (int mci = 0; mci < (*cpars).cmobile.len; mci++)
+    {
+      int ci = (*cpars).cmobile.e[mci];
+      const double *xci = gsl_vector_const_ptr(x, (*cpars).c_map.e[mci]);
+      double *fci = gsl_vector_ptr(f, (*cpars).c_map.e[mci]);
+      for (int ti = 0; ti < (*ctops).len; ti++)
+	{
+	  int ti_i = (*cembs_map).e[ci].e[ti];
+	  if (ti_i > -1) {}
+	  else continue;
+	  edge_wtd_graph *ctop = (edge_wtd_graph *) (*ctops).e[ti];
+	  array_int *cemb = (array_int *) (*cembs).e[ti];
+	  double lambda_ti = (*l_addr).e[ti] > -1 ? gsl_vector_get(x, (*l_addr).e[ti]) : 1;
+	  for (int ni = 0; ni < (*ctop).top.v.e[ti_i].len; ni++)
+	    {
+	      int ti_ii = (*ctop).top.v.e[ti_i].e[ni];
+	      int cii = (*cemb).e[ti_ii];
+	      int mcii = (*cpars).cmobile_map.e[cii];
+	      if (mcii < mci) {}
+	      else continue;
+	      const double *xcii;
+	      if (mcii > -1) xcii = gsl_vector_const_ptr(x, (*cpars).c_map.e[mcii]);
+	      else xcii = tack_set_pos((*cpars).ts, (*cpars).fibers.e[cii].e[0]);
+	      double delxsq = 0;
+	      double delx[(*(*cpars).ts).dim];
+	      for (int di = 0; di < (*(*cpars).ts).dim; di++)
+		{
+		  delx[di] = xci[di] - xcii[di];
+		  delxsq += delx[di] * delx[di];
+		}
+	      double C = lambda_ti * (*ctop).edge_wts.e[ti_i].e[ni] / sqrt(delxsq);
+	      for (int di = 0; di < (*(*cpars).ts).dim; di++)
+		{
+		  delx[di] *= C;
+		  fci[di] += delx[di];
+		}
+	      if (mcii > -1)
+		{
+		  double *fcii = gsl_vector_ptr(f, (*cpars).c_map.e[mcii]);
+		  for (int di = 0; di < (*(*cpars).ts).dim; di++) fcii[di] -= delx[di];
+		}
+	    }
+	}
+    }
 }
 
 int lsc_L_f(const gsl_vector *x, void *pars, gsl_vector *f)
 {
+  // Objective function: sum_{tops} lambda_top * (L{top} - L0{top}) + L{top_i} or -x_i . ext_f
+  // => sum_{tops} lambda_top * (d_j L{top}) . dx_j + delta_{ij} d_i L{top_i}.dx_i  or - ext_f.dx_i
+  //           + sum_{tops} d lambda_top (L{top} - L0{top})
+  gsl_vector_set_zero(f);
+  lsc_Lagrange_pars *lpars = (lsc_Lagrange_pars *) pars;
+  tack_set *ts = (*lpars).lsc->ts;
+  coord_pars *cpars = (*lpars).cpars;
+  array_voidstar *ctops = (*lpars).ctops;
+  array_voidstar *cembs = (*lpars).cembs;
+  aarray_int *cembs_map = (*lpars).cembs_map;
+  array_int *l_map = (*lpars).l_map;
+  //void lsc_solver_add_all_string_forces(const gsl_vector *x, coord_pars *cpars, array_voidstar *ctops, array_voidstar *cembs, aarray_int *cembs_map, array_int *l_addr, gsl_vector *f)
+  lsc_solver_add_all_string_forces(x, cpars, ctops, cembs, cembs_map, l_map, f);
+  for (int ti = 0; ti < (*ctops).len; ti++)
+    {
+      if ((*l_map).e[ti] > -1)
+	{
+	  double L = lsc_string_length((*ctops).e[ti], (*cembs).e[ti], cpars, x);
+	  gsl_vector_set(f, (*l_map).e[ti], L - (*lpars).Ls[ti]);
+	}
+    }
+  if ((*lpars).ext_f != NULL)
+    {
+      int ci = (*cpars).map.e[(*lpars).i];
+      int mci = (*cpars).cmobile_map.e[ci];
+      if (mci > -1) {}
+      else
+	{
+	  printf("Something weird happened! ;aoweaw\a;oi\n");
+	  exit(EXIT_FAILURE);
+	}
+      double *fci = gsl_vector_ptr(f, (*cpars).c_map.e[mci]);
+      for (int di = 0; di < (*cpars).ts->dim; di++) fci[di] -= (*lpars).ext_f[di];
+    }
 }
+
 int lsc_L_df(const gsl_vector *x, void *pars, gsl_matrix *J)
 {
-
+  // sum_{ti} lambda_{ti} * (L_{ti} - L0_{ti}) =>
+  //  sum_{ti} dlambda_{ti} * (L_{ti} - L0_{ti}) + sum_{ti} lambda_{ti} * d_{x_j} L_{ti} . dx_j
+  //  => sum_{ti} dlambda_{ti} d_{x_j} L_{ti} . dx_j + sum_{ti} d_{x_j} L_{ti}.dx_j dlambda_{ti}
+  //           + sum_{ti} lambda_{ti} dx_k . d_{x_k} d_{x_j} L_{ti} . dx_j
+  // L_{i} => d_{x_j} d_{x_k} L_i dx_j dx_k
+  gsl_matrix_set_zero(J);
+  lsc_Lagrange_pars *lpars = (lsc_Lagrange_pars *) pars;
+  coord_pars *cpars = (*lpars).cpars;
+  array_voidstar *ctops = (*lpars).ctops;
+  array_voidstar *cembs = (*lpars).cembs;
+  aarray_int *cembs_map = (*lpars).cembs_map;
+  array_int *l_map = (*lpars).l_map;
+  int dim = cpars->ts->dim;
+  gsl_matrix *incr = gsl_matrix_alloc(dim, dim);
+  int n_s_vars = (*cpars).cmobile.len * dim;
+  //  int n_l_vars = (*lpars).n_l_vars; // RESUME: define this! (n_l_vars not necessarily equal to (*l_map).len)
+  gsl_vector_view lviews[(*l_map).len];
+  for (int li = 0; li < (*l_map).len; li++)
+    {
+      if ((*l_map).e[li] > -1) lviews[li] = gsl_matrix_subrow(J, (*l_map).e[li], 0, n_s_vars);
+    }
+  for (int mi = 0; mi < (*cpars).cmobile.len; mi++)
+    {
+      int ci = (*cpars).cmobile.e[mi];
+      const double *xci = gsl_vector_const_ptr(x, (*cpars).c_map.e[mi]);
+      gsl_matrix_view J_i_i = gsl_matrix_submatrix(J, (*cpars).c_map.e[mi], (*cpars).c_map.e[mi], dim, dim);
+      for (int ti = 0; ti < (*ctops).len; ti++)
+	{
+	  double *fci = gsl_vector_ptr(&(lviews[ti].vector), (*cpars).c_map.e[mi]);
+	  int ti_i = (*cembs_map).e[ci].e[ti];
+	  if (ti_i > -1) {}
+	  else continue;
+	  edge_wtd_graph *ctop = (edge_wtd_graph *) (*ctops).e[ti];
+	  array_int *cemb = (array_int *) (*cembs).e[ti];
+	  double tau = (*l_map).e[ti] > -1 ? gsl_vector_get(x, (*l_map).e[ti]) : 1;
+	  for (int ni = 0; ni < (*ctop).top.v.e[ti_i].len; ni++)
+	    {
+	      int ti_ii = (*ctop).top.v.e[ti_i].e[ni];
+	      int cii = (*cemb).e[ti_ii];
+	      int mcii = (*cpars).cmobile_map.e[cii];
+	      if (mcii < mi) {}
+	      else continue;
+	      const double *xcii;
+	      if (mcii > -1) xcii = gsl_vector_const_ptr(x, (*cpars).c_map.e[mcii]);
+	      else xcii = tack_set_pos((*cpars).ts, (*cpars).fibers.e[cii].e[0]);
+	      double delx[(*(*cpars).ts).dim];
+	      double delxsq = 0;
+	      for (int di = 0; di < (*(*cpars).ts).dim; di++)
+		{
+		  delx[di] = xci[di] - xcii[di];
+		  delxsq += delx[di] * delx[di];
+		}
+	      if (delxsq > 0) {}
+	      else continue;
+	      double delta_f_i[(*(*cpars).ts).dim];
+	      Lagrange_solver_df_compute_incr(incr, xci, xcii, &delx[0], (*ctop).edge_wts.e[ti_i].e[ni], &delxsq, &delta_f_i[0], tau);
+	      add_lower_triangular(&(J_i_i.matrix), incr);
+	      if (mcii == -1) {}
+	      else
+		{
+		  gsl_matrix_view block_ii_ii = gsl_matrix_submatrix(J, (*cpars).c_map.e[mcii], (*cpars).c_map.e[mcii], dim, dim);
+		  gsl_matrix_view block_i_ii = gsl_matrix_submatrix(J, (*cpars).c_map.e[mi], (*cpars).c_map.e[mcii], dim, dim);
+		  add_lower_triangular(&(block_ii_ii.matrix), incr);
+		  sub_lower_triangular(&(block_i_ii.matrix), incr);
+		}
+	      if ((*l_map).e[ti] > -1)
+		{
+		  for (int di = 0; di < dim; di++) fci[di] += delta_f_i[di];
+		  // Add and subtract delta_f_i to/from f_ci and/or f_cii respectively
+		  if (mcii > -1)
+		    {
+		      double *f_ii = gsl_vector_ptr(&(lviews[ti].vector), (*cpars).c_map.e[mcii]);
+		      for (int di = 0; di < dim; di++) f_ii[di] -= delta_f_i[di];
+		    }
+		}
+	    }
+	}
+    }
+  // Set symmetric terms in df
+  for (int mi = 0; mi < (*cpars).cmobile.len; mi++)
+    {
+      for (int mii = 0; mii < mi; mii++)
+	{
+	  gsl_matrix_view block_i_ii = gsl_matrix_submatrix(J, (*cpars).c_map.e[mi], (*cpars).c_map.e[mii], dim, dim);
+	  for (int di = 0; di < dim; di++)
+	    {
+	      for (int dii = 0; dii < di; dii++)
+		{
+		  double a = gsl_matrix_get(&(block_i_ii.matrix), di, dii);
+		  gsl_matrix_set(&(block_i_ii.matrix), dii, di, a);
+		}
+	    }
+	}
+    }
+  for (int i = 0; i < (*J).size1; i++)
+    {
+      for (int j = 0; j < i; j++)
+	{
+	  double a = gsl_matrix_get(J, i, j);
+	  gsl_matrix_set(J, j, i, a);
+	}
+    }
+  gsl_matrix_free(incr);
 }
+
 int lsc_L_fdf(const gsl_vector *x, void *pars, gsl_vector *f, gsl_matrix *J)
 {
-
+  lsc_L_df(x, pars, J);
+  lsc_L_f(x, pars, f);
 }
